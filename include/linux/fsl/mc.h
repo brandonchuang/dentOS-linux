@@ -13,6 +13,7 @@
 #include <linux/device.h>
 #include <linux/mod_devicetable.h>
 #include <linux/interrupt.h>
+#include <uapi/linux/fsl_mc.h>
 
 #define FSL_MC_VENDOR_FREESCALE	0x1957
 
@@ -209,8 +210,6 @@ struct fsl_mc_device {
 #define to_fsl_mc_device(_dev) \
 	container_of(_dev, struct fsl_mc_device, dev)
 
-#define MC_CMD_NUM_OF_PARAMS	7
-
 struct mc_cmd_header {
 	u8 src_id;
 	u8 flags_hw;
@@ -218,11 +217,6 @@ struct mc_cmd_header {
 	u8 flags_sw;
 	__le16 token;
 	__le16 cmd_id;
-};
-
-struct fsl_mc_command {
-	__le64 header;
-	__le64 params[MC_CMD_NUM_OF_PARAMS];
 };
 
 enum mc_cmd_status {
@@ -624,6 +618,20 @@ int dpcon_disable(struct fsl_mc_io *mc_io,
 int dpcon_reset(struct fsl_mc_io *mc_io,
 		u32 cmd_flags,
 		u16 token);
+
+int fsl_mc_obj_open(struct fsl_mc_io *mc_io,
+		    u32 cmd_flags,
+		    int obj_id,
+		    char *obj_type,
+		    u16 *token);
+
+int fsl_mc_obj_close(struct fsl_mc_io *mc_io,
+		     u32 cmd_flags,
+		     u16 token);
+
+int fsl_mc_obj_reset(struct fsl_mc_io *mc_io,
+		     u32 cmd_flags,
+		     u16 token);
 
 /**
  * struct dpcon_attr - Structure representing DPCON attributes
