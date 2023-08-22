@@ -24,7 +24,6 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/jack.h>
-#include <sound/sdw.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 #include <sound/initval.h>
@@ -104,10 +103,13 @@ static int rt5682_set_sdw_stream(struct snd_soc_dai *dai, void *sdw_stream,
 	if (!stream)
 		return -ENOMEM;
 
-	stream->sdw_stream = sdw_stream;
+	stream->sdw_stream = (struct sdw_stream_runtime *)sdw_stream;
 
 	/* Use tx_mask or rx_mask to configure stream tag and set dma_data */
-	snd_soc_dai_dma_data_set(dai, direction, stream);
+	if (direction == SNDRV_PCM_STREAM_PLAYBACK)
+		dai->playback_dma_data = stream;
+	else
+		dai->capture_dma_data = stream;
 
 	return 0;
 }
@@ -128,10 +130,11 @@ static int rt5682_sdw_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_component *component = dai->component;
 	struct rt5682_priv *rt5682 = snd_soc_component_get_drvdata(component);
-	struct sdw_stream_config stream_config = {0};
-	struct sdw_port_config port_config = {0};
+	struct sdw_stream_config stream_config;
+	struct sdw_port_config port_config;
+	enum sdw_data_direction direction;
 	struct sdw_stream_data *stream;
-	int retval;
+	int retval, port, num_channels;
 	unsigned int val_p = 0, val_c = 0, osr_p = 0, osr_c = 0;
 
 	dev_dbg(dai->dev, "%s %s", __func__, dai->name);
@@ -144,12 +147,22 @@ static int rt5682_sdw_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 
 	/* SoundWire specific configuration */
-	snd_sdw_params_to_config(substream, params, &stream_config, &port_config);
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		direction = SDW_DATA_DIR_RX;
+		port = 1;
+	} else {
+		direction = SDW_DATA_DIR_TX;
+		port = 2;
+	}
 
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		port_config.num = 1;
-	else
-		port_config.num = 2;
+	stream_config.frame_rate = params_rate(params);
+	stream_config.ch_count = params_channels(params);
+	stream_config.bps = snd_pcm_format_width(params_format(params));
+	stream_config.direction = direction;
+
+	num_channels = params_channels(params);
+	port_config.ch_mask = (1 << (num_channels)) - 1;
+	port_config.num = port;
 
 	retval = sdw_stream_add_slave(rt5682->slave, &stream_config,
 				      &port_config, 1, stream->sdw_stream);
@@ -256,10 +269,10 @@ static int rt5682_sdw_hw_free(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static const struct snd_soc_dai_ops rt5682_sdw_ops = {
+static struct snd_soc_dai_ops rt5682_sdw_ops = {
 	.hw_params	= rt5682_sdw_hw_params,
 	.hw_free	= rt5682_sdw_hw_free,
-	.set_stream	= rt5682_set_sdw_stream,
+	.set_sdw_stream	= rt5682_set_sdw_stream,
 	.shutdown	= rt5682_sdw_shutdown,
 };
 
@@ -331,8 +344,6 @@ static int rt5682_sdw_init(struct device *dev, struct regmap *regmap,
 	rt5682->sdw_regmap = regmap;
 	rt5682->is_sdw = true;
 
-	mutex_init(&rt5682->disable_irq_lock);
-
 	rt5682->regmap = devm_regmap_init(dev, NULL, dev,
 					  &rt5682_sdw_indirect_regmap);
 	if (IS_ERR(rt5682->regmap)) {
@@ -364,13 +375,17 @@ static int rt5682_sdw_init(struct device *dev, struct regmap *regmap,
 static int rt5682_io_init(struct device *dev, struct sdw_slave *slave)
 {
 	struct rt5682_priv *rt5682 = dev_get_drvdata(dev);
-	int ret = 0, loop = 10;
+	int ret = 0;
 	unsigned int val;
-
-	rt5682->disable_irq = false;
 
 	if (rt5682->hw_init)
 		return 0;
+
+	regmap_read(rt5682->regmap, RT5682_DEVICE_ID, &val);
+	if (val != DEVICE_ID) {
+		dev_err(dev, "Device with ID register %x is not rt5682\n", val);
+		return -ENODEV;
+	}
 
 	/*
 	 * PM runtime is only enabled when a Slave reports as Attached
@@ -394,21 +409,6 @@ static int rt5682_io_init(struct device *dev, struct sdw_slave *slave)
 	if (rt5682->first_hw_init) {
 		regcache_cache_only(rt5682->regmap, false);
 		regcache_cache_bypass(rt5682->regmap, true);
-	}
-
-	while (loop > 0) {
-		regmap_read(rt5682->regmap, RT5682_DEVICE_ID, &val);
-		if (val == DEVICE_ID)
-			break;
-		dev_warn(dev, "Device with ID register %x is not rt5682\n", val);
-		usleep_range(30000, 30005);
-		loop--;
-	}
-
-	if (val != DEVICE_ID) {
-		dev_err(dev, "Device with ID register %x is not rt5682\n", val);
-		ret = -ENODEV;
-		goto err_nodev;
 	}
 
 	rt5682_calibrate(rt5682);
@@ -455,8 +455,7 @@ static int rt5682_io_init(struct device *dev, struct sdw_slave *slave)
 
 	regmap_update_bits(rt5682->regmap, RT5682_CBJ_CTRL_2,
 		RT5682_EXT_JD_SRC, RT5682_EXT_JD_SRC_MANUAL);
-	regmap_write(rt5682->regmap, RT5682_CBJ_CTRL_1, 0xd142);
-	regmap_update_bits(rt5682->regmap, RT5682_CBJ_CTRL_5, 0x0700, 0x0600);
+	regmap_write(rt5682->regmap, RT5682_CBJ_CTRL_1, 0xd042);
 	regmap_update_bits(rt5682->regmap, RT5682_CBJ_CTRL_3,
 		RT5682_CBJ_IN_BUF_EN, RT5682_CBJ_IN_BUF_EN);
 	regmap_update_bits(rt5682->regmap, RT5682_SAR_IL_CMD_1,
@@ -479,11 +478,10 @@ reinit:
 	rt5682->hw_init = true;
 	rt5682->first_hw_init = true;
 
-err_nodev:
 	pm_runtime_mark_last_busy(&slave->dev);
 	pm_runtime_put_autosuspend(&slave->dev);
 
-	dev_dbg(&slave->dev, "%s hw_init complete: %d\n", __func__, ret);
+	dev_dbg(&slave->dev, "%s hw_init complete\n", __func__);
 
 	return ret;
 }
@@ -670,17 +668,15 @@ static int rt5682_interrupt_callback(struct sdw_slave *slave,
 	dev_dbg(&slave->dev,
 		"%s control_port_stat=%x", __func__, status->control_port);
 
-	mutex_lock(&rt5682->disable_irq_lock);
-	if (status->control_port & 0x4 && !rt5682->disable_irq) {
+	if (status->control_port & 0x4) {
 		mod_delayed_work(system_power_efficient_wq,
-			&rt5682->jack_detect_work, msecs_to_jiffies(rt5682->irq_work_delay_time));
+			&rt5682->jack_detect_work, msecs_to_jiffies(250));
 	}
-	mutex_unlock(&rt5682->disable_irq_lock);
 
 	return 0;
 }
 
-static const struct sdw_slave_ops rt5682_slave_ops = {
+static struct sdw_slave_ops rt5682_slave_ops = {
 	.read_prop = rt5682_read_prop,
 	.interrupt_callback = rt5682_interrupt_callback,
 	.update_status = rt5682_update_status,
@@ -706,11 +702,8 @@ static int rt5682_sdw_remove(struct sdw_slave *slave)
 {
 	struct rt5682_priv *rt5682 = dev_get_drvdata(&slave->dev);
 
-	if (rt5682->hw_init)
-		cancel_delayed_work_sync(&rt5682->jack_detect_work);
-
-	if (rt5682->first_hw_init)
-		pm_runtime_disable(&slave->dev);
+	if (rt5682 && rt5682->hw_init)
+		cancel_delayed_work(&rt5682->jack_detect_work);
 
 	return 0;
 }
@@ -728,40 +721,10 @@ static int __maybe_unused rt5682_dev_suspend(struct device *dev)
 	if (!rt5682->hw_init)
 		return 0;
 
-	cancel_delayed_work_sync(&rt5682->jack_detect_work);
-
 	regcache_cache_only(rt5682->regmap, true);
 	regcache_mark_dirty(rt5682->regmap);
 
 	return 0;
-}
-
-static int __maybe_unused rt5682_dev_system_suspend(struct device *dev)
-{
-	struct rt5682_priv *rt5682 = dev_get_drvdata(dev);
-	struct sdw_slave *slave = dev_to_sdw_dev(dev);
-	int ret;
-
-	if (!rt5682->hw_init)
-		return 0;
-
-	/*
-	 * prevent new interrupts from being handled after the
-	 * deferred work completes and before the parent disables
-	 * interrupts on the link
-	 */
-	mutex_lock(&rt5682->disable_irq_lock);
-	rt5682->disable_irq = true;
-	ret = sdw_update_no_pm(slave, SDW_SCP_INTMASK1,
-			       SDW_SCP_INT1_IMPL_DEF, 0);
-	mutex_unlock(&rt5682->disable_irq_lock);
-
-	if (ret < 0) {
-		/* log but don't prevent suspend from happening */
-		dev_dbg(&slave->dev, "%s: could not disable imp-def interrupts\n:", __func__);
-	}
-
-	return rt5682_dev_suspend(dev);
 }
 
 static int __maybe_unused rt5682_dev_resume(struct device *dev)
@@ -770,7 +733,7 @@ static int __maybe_unused rt5682_dev_resume(struct device *dev)
 	struct rt5682_priv *rt5682 = dev_get_drvdata(dev);
 	unsigned long time;
 
-	if (!rt5682->first_hw_init)
+	if (!rt5682->hw_init)
 		return 0;
 
 	if (!slave->unattach_request)
@@ -780,8 +743,6 @@ static int __maybe_unused rt5682_dev_resume(struct device *dev)
 				msecs_to_jiffies(RT5682_PROBE_TIMEOUT));
 	if (!time) {
 		dev_err(&slave->dev, "Initialization not complete, timed out\n");
-		sdw_show_ping_status(slave->bus, true);
-
 		return -ETIMEDOUT;
 	}
 
@@ -794,7 +755,7 @@ regmap_sync:
 }
 
 static const struct dev_pm_ops rt5682_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(rt5682_dev_system_suspend, rt5682_dev_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(rt5682_dev_suspend, rt5682_dev_resume)
 	SET_RUNTIME_PM_OPS(rt5682_dev_suspend, rt5682_dev_resume, NULL)
 };
 

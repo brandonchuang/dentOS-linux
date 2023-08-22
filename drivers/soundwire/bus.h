@@ -7,8 +7,6 @@
 #define DEFAULT_BANK_SWITCH_TIMEOUT 3000
 #define DEFAULT_PROBE_TIMEOUT       2000
 
-u64 sdw_dmi_override_adr(struct sdw_bus *bus, u64 addr);
-
 #if IS_ENABLED(CONFIG_ACPI)
 int sdw_acpi_find_slaves(struct sdw_bus *bus);
 #else
@@ -151,7 +149,8 @@ int sdw_configure_dpn_intr(struct sdw_slave *slave, int port,
 			   bool enable, int mask);
 
 int sdw_transfer(struct sdw_bus *bus, struct sdw_msg *msg);
-int sdw_transfer_defer(struct sdw_bus *bus, struct sdw_msg *msg);
+int sdw_transfer_defer(struct sdw_bus *bus, struct sdw_msg *msg,
+		       struct sdw_defer *defer);
 
 #define SDW_READ_INTR_CLEAR_RETRY	10
 
@@ -198,6 +197,19 @@ static inline void sdw_fill_port_params(struct sdw_port_params *params,
 	params->bps = bps;
 	params->flow_mode = flow_mode;
 	params->data_mode = data_mode;
+}
+
+/* Read-Modify-Write Slave register */
+static inline int sdw_update(struct sdw_slave *slave, u32 addr, u8 mask, u8 val)
+{
+	int tmp;
+
+	tmp = sdw_read(slave, addr);
+	if (tmp < 0)
+		return tmp;
+
+	tmp = (tmp & ~mask) | val;
+	return sdw_write(slave, addr, tmp);
 }
 
 /* broadcast read/write for tests */

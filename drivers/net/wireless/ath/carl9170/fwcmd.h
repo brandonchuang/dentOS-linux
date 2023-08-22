@@ -118,10 +118,10 @@ struct carl9170_reg_list {
 } __packed;
 
 struct carl9170_write_reg {
-	DECLARE_FLEX_ARRAY(struct {
+	struct {
 		__le32		addr;
 		__le32		val;
-	} __packed, regs);
+	} regs[0] __packed;
 } __packed;
 
 struct carl9170_write_reg_byte {
@@ -240,7 +240,7 @@ struct carl9170_cmd {
 		struct carl9170_bcn_ctrl_cmd	bcn_ctrl;
 		struct carl9170_rx_filter_cmd	rx_filter;
 		u8 data[CARL9170_MAX_CMD_PAYLOAD_LEN];
-	} __packed __aligned(4);
+	} __packed;
 } __packed __aligned(4);
 
 #define	CARL9170_TX_STATUS_QUEUE	3

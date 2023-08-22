@@ -24,6 +24,7 @@
 #include <linux/scatterlist.h>
 #include <linux/skbuff.h>
 #include <linux/vmalloc.h>
+#include <linux/version.h>
 #include <scsi/scsi_device.h>
 #include <scsi/libiscsi_tcp.h>
 

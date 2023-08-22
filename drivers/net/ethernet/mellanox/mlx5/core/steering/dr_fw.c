@@ -5,7 +5,7 @@
 #include "dr_types.h"
 
 struct mlx5dr_fw_recalc_cs_ft *
-mlx5dr_fw_create_recalc_cs_ft(struct mlx5dr_domain *dmn, u16 vport_num)
+mlx5dr_fw_create_recalc_cs_ft(struct mlx5dr_domain *dmn, u32 vport_num)
 {
 	struct mlx5dr_cmd_create_flow_table_attr ft_attr = {};
 	struct mlx5dr_fw_recalc_cs_ft *recalc_cs_ft;
@@ -103,9 +103,7 @@ int mlx5dr_fw_create_md_tbl(struct mlx5dr_domain *dmn,
 			    int num_dest,
 			    bool reformat_req,
 			    u32 *tbl_id,
-			    u32 *group_id,
-			    bool ignore_flow_level,
-			    u32 flow_source)
+			    u32 *group_id)
 {
 	struct mlx5dr_cmd_create_flow_table_attr ft_attr = {};
 	struct mlx5dr_cmd_fte_info fte_info = {};
@@ -114,8 +112,7 @@ int mlx5dr_fw_create_md_tbl(struct mlx5dr_domain *dmn,
 	int ret;
 
 	ft_attr.table_type = MLX5_FLOW_TABLE_TYPE_FDB;
-	ft_attr.level = min_t(int, dmn->info.caps.max_ft_level - 2,
-			      MLX5_FT_MAX_MULTIPATH_LEVEL);
+	ft_attr.level = dmn->info.caps.max_ft_level - 2;
 	ft_attr.reformat_en = reformat_req;
 	ft_attr.decap_en = reformat_req;
 
@@ -139,8 +136,6 @@ int mlx5dr_fw_create_md_tbl(struct mlx5dr_domain *dmn,
 	fte_info.dests_size = num_dest;
 	fte_info.val = val;
 	fte_info.dest_arr = dest;
-	fte_info.ignore_flow_level = ignore_flow_level;
-	fte_info.flow_context.flow_source = flow_source;
 
 	ret = mlx5dr_cmd_set_fte(dmn->mdev, 0, 0, &ft_info, *group_id, &fte_info);
 	if (ret) {

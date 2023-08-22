@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/*
+/**
  * IBM Accelerator Family 'GenWQE'
  *
  * (C) Copyright IBM Corp. 2013
@@ -1089,9 +1089,24 @@ static int genwqe_pci_setup(struct genwqe_dev *cd)
 	}
 
 	/* check for 64-bit DMA address supported (DAC) */
+	if (!pci_set_dma_mask(pci_dev, DMA_BIT_MASK(64))) {
+		err = pci_set_consistent_dma_mask(pci_dev, DMA_BIT_MASK(64));
+		if (err) {
+			dev_err(&pci_dev->dev,
+				"err: DMA64 consistent mask error\n");
+			err = -EIO;
+			goto out_release_resources;
+		}
 	/* check for 32-bit DMA address supported (SAC) */
-	if (dma_set_mask_and_coherent(&pci_dev->dev, DMA_BIT_MASK(64)) &&
-	    dma_set_mask_and_coherent(&pci_dev->dev, DMA_BIT_MASK(32))) {
+	} else if (!pci_set_dma_mask(pci_dev, DMA_BIT_MASK(32))) {
+		err = pci_set_consistent_dma_mask(pci_dev, DMA_BIT_MASK(32));
+		if (err) {
+			dev_err(&pci_dev->dev,
+				"err: DMA32 consistent mask error\n");
+			err = -EIO;
+			goto out_release_resources;
+		}
+	} else {
 		dev_err(&pci_dev->dev,
 			"err: neither DMA32 nor DMA64 supported\n");
 		err = -EIO;
@@ -1349,7 +1364,7 @@ static struct pci_driver genwqe_driver = {
  * Default mode should be rw for everybody. Do not change default
  * device name.
  */
-static char *genwqe_devnode(const struct device *dev, umode_t *mode)
+static char *genwqe_devnode(struct device *dev, umode_t *mode)
 {
 	if (mode)
 		*mode = 0666;

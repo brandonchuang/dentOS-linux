@@ -115,16 +115,14 @@ static int fill_cache_read(unsigned char *start_ptr, unsigned char *end_ptr,
 
 	while (1) {
 		ret = fill_one_span_read(start_ptr, end_ptr);
-		if (!strncmp(resctrl_val, CAT_STR, sizeof(CAT_STR)))
+		if (!strcmp(resctrl_val, "cat"))
 			break;
 	}
 
 	/* Consume read result so that reading memory is not optimized out. */
 	fp = fopen("/dev/null", "w");
-	if (!fp) {
+	if (!fp)
 		perror("Unable to write to /dev/null");
-		return -1;
-	}
 	fprintf(fp, "Sum: %d ", ret);
 	fclose(fp);
 
@@ -136,7 +134,7 @@ static int fill_cache_write(unsigned char *start_ptr, unsigned char *end_ptr,
 {
 	while (1) {
 		fill_one_span_write(start_ptr, end_ptr);
-		if (!strncmp(resctrl_val, CAT_STR, sizeof(CAT_STR)))
+		if (!strcmp(resctrl_val, "cat"))
 			break;
 	}
 

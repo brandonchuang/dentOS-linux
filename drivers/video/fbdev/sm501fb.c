@@ -1166,7 +1166,7 @@ static ssize_t sm501fb_crtsrc_show(struct device *dev,
 	ctrl = smc501_readl(info->regs + SM501_DC_CRT_CONTROL);
 	ctrl &= SM501_DC_CRT_CONTROL_SEL;
 
-	return sysfs_emit(buf, "%s\n", ctrl ? "crt" : "panel");
+	return snprintf(buf, PAGE_SIZE, "%s\n", ctrl ? "crt" : "panel");
 }
 
 /* sm501fb_crtsrc_show
@@ -1719,7 +1719,7 @@ static int sm501fb_init_fb(struct fb_info *fb, enum sm501_controller head,
 		enable = 0;
 	}
 
-	strscpy(fb->fix.id, fbname, sizeof(fb->fix.id));
+	strlcpy(fb->fix.id, fbname, sizeof(fb->fix.id));
 
 	memcpy(&par->ops,
 	       (head == HEAD_CRT) ? &sm501fb_ops_crt : &sm501fb_ops_pnl,
@@ -1737,10 +1737,10 @@ static int sm501fb_init_fb(struct fb_info *fb, enum sm501_controller head,
 
 #if defined(CONFIG_OF)
 #ifdef __BIG_ENDIAN
-	if (of_property_read_bool(info->dev->parent->of_node, "little-endian"))
+	if (of_get_property(info->dev->parent->of_node, "little-endian", NULL))
 		fb->flags |= FBINFO_FOREIGN_ENDIAN;
 #else
-	if (of_property_read_bool(info->dev->parent->of_node, "big-endian"))
+	if (of_get_property(info->dev->parent->of_node, "big-endian", NULL))
 		fb->flags |= FBINFO_FOREIGN_ENDIAN;
 #endif
 #endif

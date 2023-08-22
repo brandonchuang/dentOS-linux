@@ -14,7 +14,6 @@
 #include <linux/soundwire/sdw_type.h>
 #include <linux/soundwire/sdw_registers.h>
 #include <linux/module.h>
-#include <linux/pm_runtime.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
 #include <sound/soc.h>
@@ -489,7 +488,7 @@ static int rt715_bus_config(struct sdw_slave *slave,
 	return 0;
 }
 
-static const struct sdw_slave_ops rt715_slave_ops = {
+static struct sdw_slave_ops rt715_slave_ops = {
 	.read_prop = rt715_read_prop,
 	.update_status = rt715_update_status,
 	.bus_config = rt715_bus_config,
@@ -515,16 +514,6 @@ static int rt715_sdw_probe(struct sdw_slave *slave,
 	return 0;
 }
 
-static int rt715_sdw_remove(struct sdw_slave *slave)
-{
-	struct rt715_priv *rt715 = dev_get_drvdata(&slave->dev);
-
-	if (rt715->first_hw_init)
-		pm_runtime_disable(&slave->dev);
-
-	return 0;
-}
-
 static const struct sdw_device_id rt715_id[] = {
 	SDW_SLAVE_ENTRY_EXT(0x025d, 0x714, 0x2, 0, 0),
 	SDW_SLAVE_ENTRY_EXT(0x025d, 0x715, 0x2, 0, 0),
@@ -544,7 +533,7 @@ static int __maybe_unused rt715_dev_suspend(struct device *dev)
 	return 0;
 }
 
-#define RT715_PROBE_TIMEOUT 5000
+#define RT715_PROBE_TIMEOUT 2000
 
 static int __maybe_unused rt715_dev_resume(struct device *dev)
 {
@@ -552,7 +541,7 @@ static int __maybe_unused rt715_dev_resume(struct device *dev)
 	struct rt715_priv *rt715 = dev_get_drvdata(dev);
 	unsigned long time;
 
-	if (!rt715->first_hw_init)
+	if (!rt715->hw_init)
 		return 0;
 
 	if (!slave->unattach_request)
@@ -562,8 +551,6 @@ static int __maybe_unused rt715_dev_resume(struct device *dev)
 					   msecs_to_jiffies(RT715_PROBE_TIMEOUT));
 	if (!time) {
 		dev_err(&slave->dev, "Initialization not complete, timed out\n");
-		sdw_show_ping_status(slave->bus, true);
-
 		return -ETIMEDOUT;
 	}
 
@@ -588,7 +575,6 @@ static struct sdw_driver rt715_sdw_driver = {
 		   .pm = &rt715_pm,
 		   },
 	.probe = rt715_sdw_probe,
-	.remove = rt715_sdw_remove,
 	.ops = &rt715_slave_ops,
 	.id_table = rt715_id,
 };

@@ -645,9 +645,9 @@ _loop3:
 	RESERVE_STACK  = (W_SIZE*4 + 8+24)
 
 	/* Align stack */
-	push	%rbp
-	mov	%rsp, %rbp
+	mov	%rsp, %rbx
 	and	$~(0x20-1), %rsp
+	push	%rbx
 	sub	$RESERVE_STACK, %rsp
 
 	avx2_zeroupper
@@ -665,8 +665,8 @@ _loop3:
 
 	avx2_zeroupper
 
-	mov	%rbp, %rsp
-	pop	%rbp
+	add	$RESERVE_STACK, %rsp
+	pop	%rsp
 
 	pop	%r15
 	pop	%r14
@@ -674,7 +674,7 @@ _loop3:
 	pop	%r12
 	pop	%rbx
 
-	RET
+	ret
 
 	SYM_FUNC_END(\name)
 .endm

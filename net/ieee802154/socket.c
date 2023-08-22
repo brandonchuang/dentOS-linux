@@ -41,7 +41,8 @@ ieee802154_get_dev(struct net *net, const struct ieee802154_addr *addr)
 		ieee802154_devaddr_to_raw(hwaddr, addr->extended_addr);
 		rcu_read_lock();
 		dev = dev_getbyhwaddr_rcu(net, ARPHRD_IEEE802154, hwaddr);
-		dev_hold(dev);
+		if (dev)
+			dev_hold(dev);
 		rcu_read_unlock();
 		break;
 	case IEEE802154_ADDR_SHORT:
@@ -128,7 +129,7 @@ static int ieee802154_dev_ioctl(struct sock *sk, struct ifreq __user *arg,
 	int ret = -ENOIOCTLCMD;
 	struct net_device *dev;
 
-	if (get_user_ifreq(&ifr, NULL, arg))
+	if (copy_from_user(&ifr, arg, sizeof(struct ifreq)))
 		return -EFAULT;
 
 	ifr.ifr_name[IFNAMSIZ-1] = 0;
@@ -142,7 +143,7 @@ static int ieee802154_dev_ioctl(struct sock *sk, struct ifreq __user *arg,
 	if (dev->type == ARPHRD_IEEE802154 && dev->netdev_ops->ndo_do_ioctl)
 		ret = dev->netdev_ops->ndo_do_ioctl(dev, &ifr, cmd);
 
-	if (!ret && put_user_ifreq(&ifr, arg))
+	if (!ret && copy_to_user(arg, &ifr, sizeof(struct ifreq)))
 		ret = -EFAULT;
 	dev_put(dev);
 
@@ -174,8 +175,8 @@ static int raw_hash(struct sock *sk)
 {
 	write_lock_bh(&raw_lock);
 	sk_add_node(sk, &raw_head);
-	write_unlock_bh(&raw_lock);
 	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
+	write_unlock_bh(&raw_lock);
 
 	return 0;
 }
@@ -200,9 +201,8 @@ static int raw_bind(struct sock *sk, struct sockaddr *_uaddr, int len)
 	int err = 0;
 	struct net_device *dev = NULL;
 
-	err = ieee802154_sockaddr_check_size(uaddr, len);
-	if (err < 0)
-		return err;
+	if (len < sizeof(*uaddr))
+		return -EINVAL;
 
 	uaddr = (struct sockaddr_ieee802154 *)_uaddr;
 	if (uaddr->family != AF_IEEE802154)
@@ -272,10 +272,6 @@ static int raw_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 		err = -EMSGSIZE;
 		goto out_dev;
 	}
-	if (!size) {
-		err = 0;
-		goto out_dev;
-	}
 
 	hlen = LL_RESERVED_SPACE(dev);
 	tlen = dev->needed_tailroom;
@@ -313,13 +309,13 @@ out:
 }
 
 static int raw_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
-		       int flags, int *addr_len)
+		       int noblock, int flags, int *addr_len)
 {
 	size_t copied = 0;
 	int err = -EOPNOTSUPP;
 	struct sk_buff *skb;
 
-	skb = skb_recv_datagram(sk, flags, &err);
+	skb = skb_recv_datagram(sk, flags, noblock, &err);
 	if (!skb)
 		goto out;
 
@@ -333,7 +329,7 @@ static int raw_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 	if (err)
 		goto done;
 
-	sock_recv_cmsgs(msg, sk, skb);
+	sock_recv_ts_and_drops(msg, sk, skb);
 
 	if (flags & MSG_TRUNC)
 		copied = skb->len;
@@ -458,8 +454,8 @@ static int dgram_hash(struct sock *sk)
 {
 	write_lock_bh(&dgram_lock);
 	sk_add_node(sk, &dgram_head);
-	write_unlock_bh(&dgram_lock);
 	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
+	write_unlock_bh(&dgram_lock);
 
 	return 0;
 }
@@ -498,14 +494,11 @@ static int dgram_bind(struct sock *sk, struct sockaddr *uaddr, int len)
 
 	ro->bound = 0;
 
-	err = ieee802154_sockaddr_check_size(addr, len);
-	if (err < 0)
+	if (len < sizeof(*addr))
 		goto out;
 
-	if (addr->family != AF_IEEE802154) {
-		err = -EINVAL;
+	if (addr->family != AF_IEEE802154)
 		goto out;
-	}
 
 	ieee802154_addr_from_sa(&haddr, &addr->addr);
 	dev = ieee802154_get_dev(sock_net(sk), &haddr);
@@ -572,9 +565,8 @@ static int dgram_connect(struct sock *sk, struct sockaddr *uaddr,
 	struct dgram_sock *ro = dgram_sk(sk);
 	int err = 0;
 
-	err = ieee802154_sockaddr_check_size(addr, len);
-	if (err < 0)
-		return err;
+	if (len < sizeof(*addr))
+		return -EINVAL;
 
 	if (addr->family != AF_IEEE802154)
 		return -EINVAL;
@@ -613,7 +605,6 @@ static int dgram_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 	struct ieee802154_mac_cb *cb;
 	struct dgram_sock *ro = dgram_sk(sk);
 	struct ieee802154_addr dst_addr;
-	DECLARE_SOCKADDR(struct sockaddr_ieee802154*, daddr, msg->msg_name);
 	int hlen, tlen;
 	int err;
 
@@ -622,20 +613,10 @@ static int dgram_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 		return -EOPNOTSUPP;
 	}
 
-	if (msg->msg_name) {
-		if (ro->connected)
-			return -EISCONN;
-		if (msg->msg_namelen < IEEE802154_MIN_NAMELEN)
-			return -EINVAL;
-		err = ieee802154_sockaddr_check_size(daddr, msg->msg_namelen);
-		if (err < 0)
-			return err;
-		ieee802154_addr_from_sa(&dst_addr, &daddr->addr);
-	} else {
-		if (!ro->connected)
-			return -EDESTADDRREQ;
-		dst_addr = ro->dst_addr;
-	}
+	if (!ro->connected && !msg->msg_name)
+		return -EDESTADDRREQ;
+	else if (ro->connected && msg->msg_name)
+		return -EISCONN;
 
 	if (!ro->bound)
 		dev = dev_getfirstbyhwtype(sock_net(sk), ARPHRD_IEEE802154);
@@ -671,6 +652,16 @@ static int dgram_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 	cb = mac_cb_init(skb);
 	cb->type = IEEE802154_FC_TYPE_DATA;
 	cb->ackreq = ro->want_ack;
+
+	if (msg->msg_name) {
+		DECLARE_SOCKADDR(struct sockaddr_ieee802154*,
+				 daddr, msg->msg_name);
+
+		ieee802154_addr_from_sa(&dst_addr, &daddr->addr);
+	} else {
+		dst_addr = ro->dst_addr;
+	}
+
 	cb->secen = ro->secen;
 	cb->secen_override = ro->secen_override;
 	cb->seclevel = ro->seclevel;
@@ -705,7 +696,7 @@ out:
 }
 
 static int dgram_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
-			 int flags, int *addr_len)
+			 int noblock, int flags, int *addr_len)
 {
 	size_t copied = 0;
 	int err = -EOPNOTSUPP;
@@ -713,7 +704,7 @@ static int dgram_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 	struct dgram_sock *ro = dgram_sk(sk);
 	DECLARE_SOCKADDR(struct sockaddr_ieee802154 *, saddr, msg->msg_name);
 
-	skb = skb_recv_datagram(sk, flags, &err);
+	skb = skb_recv_datagram(sk, flags, noblock, &err);
 	if (!skb)
 		goto out;
 
@@ -728,7 +719,7 @@ static int dgram_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 	if (err)
 		goto done;
 
-	sock_recv_cmsgs(msg, sk, skb);
+	sock_recv_ts_and_drops(msg, sk, skb);
 
 	if (saddr) {
 		/* Clear the implicit padding in struct sockaddr_ieee802154
@@ -993,11 +984,6 @@ static const struct proto_ops ieee802154_dgram_ops = {
 	.sendpage	   = sock_no_sendpage,
 };
 
-static void ieee802154_sock_destruct(struct sock *sk)
-{
-	skb_queue_purge(&sk->sk_receive_queue);
-}
-
 /* Create a socket. Initialise the socket, blank the addresses
  * set the state.
  */
@@ -1038,7 +1024,7 @@ static int ieee802154_create(struct net *net, struct socket *sock,
 	sock->ops = ops;
 
 	sock_init_data(sock, sk);
-	sk->sk_destruct = ieee802154_sock_destruct;
+	/* FIXME: sk->sk_destruct */
 	sk->sk_family = PF_IEEE802154;
 
 	/* Checksums on by default */

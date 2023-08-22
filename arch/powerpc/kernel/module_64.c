@@ -14,7 +14,6 @@
 #include <linux/ftrace.h>
 #include <linux/bug.h>
 #include <linux/uaccess.h>
-#include <linux/kernel.h>
 #include <asm/module.h>
 #include <asm/firmware.h>
 #include <asm/code-patching.h>
@@ -31,25 +30,22 @@
    this, and makes other things simpler.  Anton?
    --RR.  */
 
-bool module_elf_check_arch(Elf_Ehdr *hdr)
-{
-	unsigned long abi_level = hdr->e_flags & 0x3;
+#ifdef PPC64_ELF_ABI_v2
 
-	if (IS_ENABLED(CONFIG_PPC64_ELF_ABI_V2))
-		return abi_level == 2;
-	else
-		return abi_level < 2;
-}
-
-#ifdef CONFIG_PPC64_ELF_ABI_V2
+/* An address is simply the address of the function. */
+typedef unsigned long func_desc_t;
 
 static func_desc_t func_desc(unsigned long addr)
 {
-	func_desc_t desc = {
-		.addr = addr,
-	};
-
-	return desc;
+	return addr;
+}
+static unsigned long func_addr(unsigned long addr)
+{
+	return addr;
+}
+static unsigned long stub_func_addr(func_desc_t func)
+{
+	return func;
 }
 
 /* PowerPC64 specific values for the Elf64_Sym st_other field.  */
@@ -67,9 +63,20 @@ static unsigned int local_entry_offset(const Elf64_Sym *sym)
 }
 #else
 
+/* An address is address of the OPD entry, which contains address of fn. */
+typedef struct ppc64_opd_entry func_desc_t;
+
 static func_desc_t func_desc(unsigned long addr)
 {
-	return *(struct func_desc *)addr;
+	return *(struct ppc64_opd_entry *)addr;
+}
+static unsigned long func_addr(unsigned long addr)
+{
+	return func_desc(addr).funcaddr;
+}
+static unsigned long stub_func_addr(func_desc_t func)
+{
+	return func.funcaddr;
 }
 static unsigned int local_entry_offset(const Elf64_Sym *sym)
 {
@@ -85,16 +92,6 @@ void *dereference_module_function_descriptor(struct module *mod, void *ptr)
 	return dereference_function_descriptor(ptr);
 }
 #endif
-
-static unsigned long func_addr(unsigned long addr)
-{
-	return func_desc(addr).addr;
-}
-
-static unsigned long stub_func_addr(func_desc_t func)
-{
-	return func.addr;
-}
 
 #define STUB_MAGIC 0x73747562 /* stub */
 
@@ -125,19 +122,27 @@ struct ppc64_stub_entry
  * the stub, but it's significantly shorter to put these values at the
  * end of the stub code, and patch the stub address (32-bits relative
  * to the TOC ptr, r2) into the stub.
+ *
+ * addis   r11,r2, <high>
+ * addi    r11,r11, <low>
+ * std     r2,R2_STACK_OFFSET(r1)
+ * ld      r12,32(r11)
+ * ld      r2,40(r11)
+ * mtctr   r12
+ * bctr
  */
 static u32 ppc64_stub_insns[] = {
-	PPC_RAW_ADDIS(_R11, _R2, 0),
-	PPC_RAW_ADDI(_R11, _R11, 0),
+	PPC_INST_ADDIS | __PPC_RT(R11) | __PPC_RA(R2),
+	PPC_INST_ADDI | __PPC_RT(R11) | __PPC_RA(R11),
 	/* Save current r2 value in magic place on the stack. */
-	PPC_RAW_STD(_R2, _R1, R2_STACK_OFFSET),
-	PPC_RAW_LD(_R12, _R11, 32),
-#ifdef CONFIG_PPC64_ELF_ABI_V1
+	PPC_INST_STD | __PPC_RS(R2) | __PPC_RA(R1) | R2_STACK_OFFSET,
+	PPC_INST_LD | __PPC_RT(R12) | __PPC_RA(R11) | 32,
+#ifdef PPC64_ELF_ABI_v1
 	/* Set up new r2 from function descriptor */
-	PPC_RAW_LD(_R2, _R11, 40),
+	PPC_INST_LD | __PPC_RT(R2) | __PPC_RA(R11) | 40,
 #endif
-	PPC_RAW_MTCTR(_R12),
-	PPC_RAW_BCTR(),
+	PPC_INST_MTCTR | __PPC_RS(R12),
+	PPC_INST_BCTR,
 };
 
 /* Count how many different 24-bit relocations (different symbol,
@@ -190,7 +195,7 @@ static int relacmp(const void *_x, const void *_y)
 static unsigned long get_stubs_size(const Elf64_Ehdr *hdr,
 				    const Elf64_Shdr *sechdrs)
 {
-	/* One extra reloc so it's always 0-addr terminated */
+	/* One extra reloc so it's always 0-funcaddr terminated */
 	unsigned long relocs = 1;
 	unsigned i;
 
@@ -204,7 +209,7 @@ static unsigned long get_stubs_size(const Elf64_Ehdr *hdr,
 
 			/* Sort the relocation information based on a symbol and
 			 * addend key. This is a stable O(n*log n) complexity
-			 * algorithm but it will reduce the complexity of
+			 * alogrithm but it will reduce the complexity of
 			 * count_relocs() to linear complexity O(n)
 			 */
 			sort((void *)sechdrs[i].sh_addr,
@@ -280,12 +285,6 @@ static Elf64_Sym *find_dot_toc(Elf64_Shdr *sechdrs,
 	return NULL;
 }
 
-bool module_init_section(const char *name)
-{
-	/* We don't handle .init for the moment: always return false. */
-	return false;
-}
-
 int module_frob_arch_sections(Elf64_Ehdr *hdr,
 			      Elf64_Shdr *sechdrs,
 			      char *secstrings,
@@ -295,6 +294,7 @@ int module_frob_arch_sections(Elf64_Ehdr *hdr,
 
 	/* Find .toc and .stubs sections, symtab and strtab */
 	for (i = 1; i < hdr->e_shnum; i++) {
+		char *p;
 		if (strcmp(secstrings + sechdrs[i].sh_name, ".stubs") == 0)
 			me->arch.stubs_section = i;
 		else if (strcmp(secstrings + sechdrs[i].sh_name, ".toc") == 0) {
@@ -305,6 +305,10 @@ int module_frob_arch_sections(Elf64_Ehdr *hdr,
 		else if (strcmp(secstrings+sechdrs[i].sh_name,"__versions")==0)
 			dedotify_versions((void *)hdr + sechdrs[i].sh_offset,
 					  sechdrs[i].sh_size);
+
+		/* We don't handle .init for the moment: rename to _init */
+		while ((p = strstr(secstrings + sechdrs[i].sh_name, ".init")))
+			p[0] = '_';
 
 		if (sechdrs[i].sh_type == SHT_SYMTAB)
 			dedotify((void *)hdr + sechdrs[i].sh_offset,
@@ -332,12 +336,21 @@ int module_frob_arch_sections(Elf64_Ehdr *hdr,
 
 #ifdef CONFIG_MPROFILE_KERNEL
 
+#define PACATOC offsetof(struct paca_struct, kernel_toc)
+
+/*
+ * ld      r12,PACATOC(r13)
+ * addis   r12,r12,<high>
+ * addi    r12,r12,<low>
+ * mtctr   r12
+ * bctr
+ */
 static u32 stub_insns[] = {
-	PPC_RAW_LD(_R12, _R13, offsetof(struct paca_struct, kernel_toc)),
-	PPC_RAW_ADDIS(_R12, _R12, 0),
-	PPC_RAW_ADDI(_R12, _R12, 0),
-	PPC_RAW_MTCTR(_R12),
-	PPC_RAW_BCTR(),
+	PPC_INST_LD | __PPC_RT(R12) | __PPC_RA(R13) | PACATOC,
+	PPC_INST_ADDIS | __PPC_RT(R12) | __PPC_RA(R12),
+	PPC_INST_ADDI | __PPC_RT(R12) | __PPC_RA(R12),
+	PPC_INST_MTCTR | __PPC_RS(R12),
+	PPC_INST_BCTR,
 };
 
 /*
@@ -371,7 +384,7 @@ static inline int create_ftrace_stub(struct ppc64_stub_entry *entry,
 	entry->jump[1] |= PPC_HA(reladdr);
 	entry->jump[2] |= PPC_LO(reladdr);
 
-	/* Even though we don't use funcdata in the stub, it's needed elsewhere. */
+	/* Eventhough we don't use funcdata in the stub, it's needed elsewhere. */
 	entry->funcdata = func_desc(addr);
 	entry->magic = STUB_MAGIC;
 
@@ -426,17 +439,11 @@ static inline int create_stub(const Elf64_Shdr *sechdrs,
 			      const char *name)
 {
 	long reladdr;
-	func_desc_t desc;
-	int i;
 
 	if (is_mprofile_ftrace_call(name))
 		return create_ftrace_stub(entry, addr, me);
 
-	for (i = 0; i < ARRAY_SIZE(ppc64_stub_insns); i++) {
-		if (patch_instruction(&entry->jump[i],
-				      ppc_inst(ppc64_stub_insns[i])))
-			return 0;
-	}
+	memcpy(entry->jump, ppc64_stub_insns, sizeof(ppc64_stub_insns));
 
 	/* Stub uses address relative to r2. */
 	reladdr = (unsigned long)entry - my_r2(sechdrs, me);
@@ -447,24 +454,10 @@ static inline int create_stub(const Elf64_Shdr *sechdrs,
 	}
 	pr_debug("Stub %p get data from reladdr %li\n", entry, reladdr);
 
-	if (patch_instruction(&entry->jump[0],
-			      ppc_inst(entry->jump[0] | PPC_HA(reladdr))))
-		return 0;
-
-	if (patch_instruction(&entry->jump[1],
-			  ppc_inst(entry->jump[1] | PPC_LO(reladdr))))
-		return 0;
-
-	// func_desc_t is 8 bytes if ABIv2, else 16 bytes
-	desc = func_desc(addr);
-	for (i = 0; i < sizeof(func_desc_t) / sizeof(u32); i++) {
-		if (patch_instruction(((u32 *)&entry->funcdata) + i,
-				      ppc_inst(((u32 *)(&desc))[i])))
-			return 0;
-	}
-
-	if (patch_instruction(&entry->magic, ppc_inst(STUB_MAGIC)))
-		return 0;
+	entry->jump[0] |= PPC_HA(reladdr);
+	entry->jump[1] |= PPC_LO(reladdr);
+	entry->funcdata = func_desc(addr);
+	entry->magic = STUB_MAGIC;
 
 	return 1;
 }
@@ -502,10 +495,9 @@ static unsigned long stub_for_addr(const Elf64_Shdr *sechdrs,
 static int restore_r2(const char *name, u32 *instruction, struct module *me)
 {
 	u32 *prev_insn = instruction - 1;
-	u32 insn_val = *instruction;
 
 	if (is_mprofile_ftrace_call(name))
-		return 0;
+		return 1;
 
 	/*
 	 * Make sure the branch isn't a sibling call.  Sibling calls aren't
@@ -513,25 +505,16 @@ static int restore_r2(const char *name, u32 *instruction, struct module *me)
 	 * restore afterwards.
 	 */
 	if (!instr_is_relative_link_branch(ppc_inst(*prev_insn)))
-		return 0;
+		return 1;
 
-	/*
-	 * For livepatch, the restore r2 instruction might have already been
-	 * written previously, if the referenced symbol is in a previously
-	 * unloaded module which is now being loaded again.  In that case, skip
-	 * the warning and the instruction write.
-	 */
-	if (insn_val == PPC_INST_LD_TOC)
-		return 0;
-
-	if (insn_val != PPC_RAW_NOP()) {
+	if (*instruction != PPC_INST_NOP) {
 		pr_err("%s: Expected nop after call, got %08x at %pS\n",
-			me->name, insn_val, instruction);
-		return -ENOEXEC;
+			me->name, *instruction, instruction);
+		return 0;
 	}
-
 	/* ld r2,R2_STACK_OFFSET(r1) */
-	return patch_instruction(instruction, ppc_inst(PPC_INST_LD_TOC));
+	*instruction = PPC_INST_LD_TOC;
+	return 1;
 }
 
 int apply_relocate_add(Elf64_Shdr *sechdrs,
@@ -655,8 +638,8 @@ int apply_relocate_add(Elf64_Shdr *sechdrs,
 						strtab + sym->st_name);
 				if (!value)
 					return -ENOENT;
-				if (restore_r2(strtab + sym->st_name,
-					       (u32 *)location + 1, me))
+				if (!restore_r2(strtab + sym->st_name,
+							(u32 *)location + 1, me))
 					return -ENOEXEC;
 			} else
 				value += local_entry_offset(sym);
@@ -670,11 +653,9 @@ int apply_relocate_add(Elf64_Shdr *sechdrs,
 			}
 
 			/* Only replace bits 2 through 26 */
-			value = (*(uint32_t *)location & ~PPC_LI_MASK) | PPC_LI(value);
-
-			if (patch_instruction((u32 *)location, ppc_inst(value)))
-				return -EFAULT;
-
+			*(uint32_t *)location
+				= (*(uint32_t *)location & ~0x03fffffc)
+				| (value & 0x03fffffc);
 			break;
 
 		case R_PPC64_REL64:
@@ -715,17 +696,21 @@ int apply_relocate_add(Elf64_Shdr *sechdrs,
 		         *	ld r2, ...(r12)
 			 *	add r2, r2, r12
 			 */
-			if ((((uint32_t *)location)[0] & ~0xfffc) != PPC_RAW_LD(_R2, _R12, 0))
+			if ((((uint32_t *)location)[0] & ~0xfffc) !=
+			    (PPC_INST_LD | __PPC_RT(R2) | __PPC_RA(R12)))
 				break;
-			if (((uint32_t *)location)[1] != PPC_RAW_ADD(_R2, _R2, _R12))
+			if (((uint32_t *)location)[1] !=
+			    (PPC_INST_ADD | __PPC_RT(R2) | __PPC_RA(R2) | __PPC_RB(R12)))
 				break;
 			/*
 			 * If found, replace it with:
 			 *	addis r2, r12, (.TOC.-func)@ha
 			 *	addi  r2,  r2, (.TOC.-func)@l
 			 */
-			((uint32_t *)location)[0] = PPC_RAW_ADDIS(_R2, _R12, PPC_HA(value));
-			((uint32_t *)location)[1] = PPC_RAW_ADDI(_R2, _R2, PPC_LO(value));
+			((uint32_t *)location)[0] = PPC_INST_ADDIS | __PPC_RT(R2) |
+						    __PPC_RA(R12) | PPC_HA(value);
+			((uint32_t *)location)[1] = PPC_INST_ADDI | __PPC_RT(R2) |
+						    __PPC_RA(R2) | PPC_LO(value);
 			break;
 
 		case R_PPC64_REL16_HA:

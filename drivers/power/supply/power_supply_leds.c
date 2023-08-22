@@ -13,7 +13,6 @@
 #include <linux/device.h>
 #include <linux/power_supply.h>
 #include <linux/slab.h>
-#include <linux/leds.h>
 
 #include "power_supply.h"
 

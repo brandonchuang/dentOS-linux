@@ -22,10 +22,10 @@
 #define	PROC_FIFO	"bytestream-fifo"
 
 /* lock for procfs read access */
-static DEFINE_MUTEX(read_access);
+static DEFINE_MUTEX(read_lock);
 
 /* lock for procfs write access */
-static DEFINE_MUTEX(write_access);
+static DEFINE_MUTEX(write_lock);
 
 /*
  * define DYNAMIC in this example for a dynamically allocated fifo.
@@ -116,16 +116,14 @@ static ssize_t fifo_write(struct file *file, const char __user *buf,
 	int ret;
 	unsigned int copied;
 
-	if (mutex_lock_interruptible(&write_access))
+	if (mutex_lock_interruptible(&write_lock))
 		return -ERESTARTSYS;
 
 	ret = kfifo_from_user(&test, buf, count, &copied);
 
-	mutex_unlock(&write_access);
-	if (ret)
-		return ret;
+	mutex_unlock(&write_lock);
 
-	return copied;
+	return ret ? ret : copied;
 }
 
 static ssize_t fifo_read(struct file *file, char __user *buf,
@@ -134,16 +132,14 @@ static ssize_t fifo_read(struct file *file, char __user *buf,
 	int ret;
 	unsigned int copied;
 
-	if (mutex_lock_interruptible(&read_access))
+	if (mutex_lock_interruptible(&read_lock))
 		return -ERESTARTSYS;
 
 	ret = kfifo_to_user(&test, buf, count, &copied);
 
-	mutex_unlock(&read_access);
-	if (ret)
-		return ret;
+	mutex_unlock(&read_lock);
 
-	return copied;
+	return ret ? ret : copied;
 }
 
 static const struct proc_ops fifo_proc_ops = {

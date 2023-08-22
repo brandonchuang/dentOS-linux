@@ -263,20 +263,12 @@ static FORCE_INLINE int LZ4_decompress_generic(
 				}
 			}
 
-			/*
-			 * supports overlapping memory regions; only matters
-			 * for in-place decompression scenarios
-			 */
-			LZ4_memmove(op, ip, length);
+			LZ4_memcpy(op, ip, length);
 			ip += length;
 			op += length;
 
-			/* Necessarily EOF when !partialDecoding.
-			 * When partialDecoding, it is EOF if we've either
-			 * filled the output buffer or
-			 * can't proceed with reading an offset for following match.
-			 */
-			if (!partialDecoding || (cpy == oend) || (ip >= (iend - 2)))
+			/* Necessarily EOF, due to parsing restrictions */
+			if (!partialDecoding || (cpy == oend))
 				break;
 		} else {
 			/* may overwrite up to WILDCOPYLENGTH beyond cpy */
@@ -485,7 +477,7 @@ int LZ4_decompress_fast(const char *source, char *dest, int originalSize)
 
 /* ===== Instantiate a few more decoding cases, used more than once. ===== */
 
-static int LZ4_decompress_safe_withPrefix64k(const char *source, char *dest,
+int LZ4_decompress_safe_withPrefix64k(const char *source, char *dest,
 				      int compressedSize, int maxOutputSize)
 {
 	return LZ4_decompress_generic(source, dest,
@@ -507,9 +499,9 @@ static int LZ4_decompress_safe_withSmallPrefix(const char *source, char *dest,
 				      (BYTE *)dest - prefixSize, NULL, 0);
 }
 
-static int LZ4_decompress_safe_forceExtDict(const char *source, char *dest,
-					    int compressedSize, int maxOutputSize,
-					    const void *dictStart, size_t dictSize)
+int LZ4_decompress_safe_forceExtDict(const char *source, char *dest,
+				     int compressedSize, int maxOutputSize,
+				     const void *dictStart, size_t dictSize)
 {
 	return LZ4_decompress_generic(source, dest,
 				      compressedSize, maxOutputSize,

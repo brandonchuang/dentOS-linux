@@ -115,18 +115,17 @@ static bool pde_subdir_insert(struct proc_dir_entry *dir,
 	return true;
 }
 
-static int proc_notify_change(struct mnt_idmap *idmap,
-			      struct dentry *dentry, struct iattr *iattr)
+static int proc_notify_change(struct dentry *dentry, struct iattr *iattr)
 {
 	struct inode *inode = d_inode(dentry);
 	struct proc_dir_entry *de = PDE(inode);
 	int error;
 
-	error = setattr_prepare(&nop_mnt_idmap, dentry, iattr);
+	error = setattr_prepare(dentry, iattr);
 	if (error)
 		return error;
 
-	setattr_copy(&nop_mnt_idmap, inode, iattr);
+	setattr_copy(inode, iattr);
 	mark_inode_dirty(inode);
 
 	proc_set_user(de, inode->i_uid, inode->i_gid);
@@ -134,8 +133,7 @@ static int proc_notify_change(struct mnt_idmap *idmap,
 	return 0;
 }
 
-static int proc_getattr(struct mnt_idmap *idmap,
-			const struct path *path, struct kstat *stat,
+static int proc_getattr(const struct path *path, struct kstat *stat,
 			u32 request_mask, unsigned int query_flags)
 {
 	struct inode *inode = d_inode(path->dentry);
@@ -147,7 +145,7 @@ static int proc_getattr(struct mnt_idmap *idmap,
 		}
 	}
 
-	generic_fillattr(&nop_mnt_idmap, inode, stat);
+	generic_fillattr(inode, stat);
 	return 0;
 }
 
@@ -166,8 +164,15 @@ static int __xlate_proc_name(const char *name, struct proc_dir_entry **ret,
 	const char     		*cp = name, *next;
 	struct proc_dir_entry	*de;
 
-	de = *ret ?: &proc_root;
-	while ((next = strchr(cp, '/')) != NULL) {
+	de = *ret;
+	if (!de)
+		de = &proc_root;
+
+	while (1) {
+		next = strchr(cp, '/');
+		if (!next)
+			break;
+
 		de = pde_subdir_find(de, cp, next - cp);
 		if (!de) {
 			WARN(1, "name '%s'\n", name);
@@ -448,9 +453,6 @@ static struct proc_dir_entry *__proc_create(struct proc_dir_entry **parent,
 	proc_set_user(ent, (*parent)->uid, (*parent)->gid);
 
 	ent->proc_dops = &proc_misc_dentry_ops;
-	/* Revalidate everything under /proc/${pid}/net */
-	if ((*parent)->proc_dops == &proc_net_dentry_ops)
-		pde_force_lookup(ent);
 
 out:
 	return ent;
@@ -752,7 +754,7 @@ int remove_proc_subtree(const char *name, struct proc_dir_entry *parent)
 	while (1) {
 		next = pde_subdir_first(de);
 		if (next) {
-			if (unlikely(pde_is_permanent(next))) {
+			if (unlikely(pde_is_permanent(root))) {
 				write_unlock(&proc_subdir_lock);
 				WARN(1, "removing permanent /proc entry '%s/%s'",
 					next->parent->name, next->name);
@@ -793,6 +795,12 @@ void proc_remove(struct proc_dir_entry *de)
 		remove_proc_subtree(de->name, de->parent);
 }
 EXPORT_SYMBOL(proc_remove);
+
+void *PDE_DATA(const struct inode *inode)
+{
+	return __PDE_DATA(inode);
+}
+EXPORT_SYMBOL(PDE_DATA);
 
 /*
  * Pull a user buffer into memory and pass it to the file's write handler if

@@ -18,21 +18,6 @@
 	model = "Tolino Shine 2 HD";
 	compatible = "kobo,tolino-shine2hd", "fsl,imx6sl";
 
-	backlight {
-		compatible = "pwm-backlight";
-		pwms = <&ec 0 50000>;
-		power-supply = <&backlight_regulator>;
-	};
-
-	backlight_regulator: regulator-backlight {
-		compatible = "regulator-fixed";
-		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_backlight_power>;
-		regulator-name = "backlight";
-		gpio = <&gpio2 10 GPIO_ACTIVE_HIGH>;
-		enable-active-high;
-	};
-
 	chosen {
 		stdout-path = &uart1;
 	};
@@ -42,7 +27,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_gpio_keys>;
 
-		key-cover {
+		cover {
 			label = "Cover";
 			gpios = <&gpio5 12 GPIO_ACTIVE_LOW>;
 			linux,code = <SW_LID>;
@@ -50,19 +35,19 @@
 			wakeup-source;
 		};
 
-		key-fl {
+		fl {
 			label = "Frontlight";
 			gpios = <&gpio3 26 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_BRIGHTNESS_CYCLE>;
 		};
 
-		key-home {
+		home {
 			label = "Home";
 			gpios = <&gpio3 25 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_HOME>;
 		};
 
-		key-power {
+		power {
 			label = "Power";
 			gpios = <&gpio5 8 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_POWER>;
@@ -75,16 +60,10 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_led>;
 
-		led-0 {
+		on {
 			label = "tolinoshine2hd:white:on";
 			gpios = <&gpio5 13 GPIO_ACTIVE_LOW>;
 			linux,default-trigger = "timer";
-		};
-
-		led-1 {
-			label = "tolinoshine2hd:white:backlightboost";
-			gpios = <&gpio1 29 GPIO_ACTIVE_HIGH>;
-			linux,default-trigger = "off";
 		};
 	};
 
@@ -118,11 +97,8 @@
 	pinctrl-1 = <&pinctrl_i2c1_sleep>;
 	status = "okay";
 
-	ec: embedded-controller@43 {
-		compatible = "netronix,ntxec";
-		reg = <0x43>;
-		#pwm-cells = <2>;
-	};
+	/* TODO: embedded controller at 0x43 (driver missing) */
+
 };
 
 &i2c2 {
@@ -320,12 +296,6 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_hog>;
 
-	pinctrl_backlight_power: backlight-powergrp {
-		fsl,pins = <
-			MX6SL_PAD_EPDC_PWRCTRL3__GPIO2_IO10 0x10059
-		>;
-	};
-
 	pinctrl_gpio_keys: gpio-keysgrp {
 		fsl,pins = <
 			MX6SL_PAD_SD1_DAT1__GPIO5_IO08  0x17059
@@ -370,6 +340,7 @@
 			MX6SL_PAD_KEY_ROW7__GPIO4_IO07		0x79
 			MX6SL_PAD_ECSPI2_MOSI__GPIO4_IO13	0x79
 			MX6SL_PAD_KEY_COL5__GPIO4_IO02		0x79
+			MX6SL_PAD_KEY_ROW6__GPIO4_IO05		0x79
 		>;
 	};
 
@@ -410,8 +381,7 @@
 
 	pinctrl_led: ledgrp {
 		fsl,pins = <
-			MX6SL_PAD_SD1_DAT2__GPIO5_IO13    0x17059
-			MX6SL_PAD_EPDC_SDCE2__GPIO1_IO29  0x17059
+			MX6SL_PAD_SD1_DAT2__GPIO5_IO13 0x17059
 		>;
 	};
 
@@ -426,14 +396,7 @@
 	pinctrl_uart1: uart1grp {
 		fsl,pins = <
 			MX6SL_PAD_UART1_TXD__UART1_TX_DATA 0x1b0b1
-			MX6SL_PAD_UART1_RXD__UART1_RX_DATA 0x1b0b1
-		>;
-	};
-
-	pinctrl_uart4: uart4grp {
-		fsl,pins = <
-			MX6SL_PAD_KEY_ROW6__UART4_TX_DATA 0x1b0b1
-			MX6SL_PAD_KEY_COL6__UART4_RX_DATA 0x1b0b1
+			MX6SL_PAD_UART1_RXD__UART1_TX_DATA 0x1b0b1
 		>;
 	};
 
@@ -580,16 +543,8 @@
 };
 
 &uart1 {
-	/* J4, through-holes */
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_uart1>;
-	status = "okay";
-};
-
-&uart4 {
-	/* TP198, next to J4, SMD pads */
-	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_uart4>;
 	status = "okay";
 };
 
@@ -625,7 +580,6 @@
 
 &usbotg1 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_usbotg1>;
 	disable-over-current;
 	srp-disable;
 	hnp-disable;

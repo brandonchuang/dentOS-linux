@@ -14,7 +14,7 @@
 #include <linux/workqueue.h>
 #include <xen/xenbus.h>
 #include <xen/events.h>
-#include <xen/pci.h>
+#include <asm/xen/pci.h>
 #include "pciback.h"
 
 #define INVALID_EVTCHN_IRQ  (-1)
@@ -31,7 +31,7 @@ MODULE_PARM_DESC(passthrough,
 	"   frontend (for example, a device at 06:01.b will still appear at\n"\
 	"   06:01.b to the frontend). This is similar to how Xen 2.0.x\n"\
 	"   exposed PCI devices to its driver domains. This may be required\n"\
-	"   for drivers which depend on finding their hardware in certain\n"\
+	"   for drivers which depend on finding their hardward in certain\n"\
 	"   bus/slot locations.");
 
 static struct xen_pcibk_device *alloc_pdev(struct xenbus_device *xdev)
@@ -124,7 +124,7 @@ static int xen_pcibk_do_attach(struct xen_pcibk_device *pdev, int gnt_ref,
 	pdev->sh_info = vaddr;
 
 	err = bind_interdomain_evtchn_to_irqhandler_lateeoi(
-		pdev->xdev, remote_evtchn, xen_pcibk_handle_event,
+		pdev->xdev->otherend_id, remote_evtchn, xen_pcibk_handle_event,
 		0, DRV_NAME, pdev);
 	if (err < 0) {
 		xenbus_dev_fatal(pdev->xdev, err,
@@ -359,8 +359,7 @@ out:
 	return err;
 }
 
-static int xen_pcibk_reconfigure(struct xen_pcibk_device *pdev,
-				 enum xenbus_state state)
+static int xen_pcibk_reconfigure(struct xen_pcibk_device *pdev)
 {
 	int err = 0;
 	int num_devs;
@@ -374,7 +373,9 @@ static int xen_pcibk_reconfigure(struct xen_pcibk_device *pdev,
 	dev_dbg(&pdev->xdev->dev, "Reconfiguring device ...\n");
 
 	mutex_lock(&pdev->dev_lock);
-	if (xenbus_read_driver_state(pdev->xdev->nodename) != state)
+	/* Make sure we only reconfigure once */
+	if (xenbus_read_driver_state(pdev->xdev->nodename) !=
+	    XenbusStateReconfiguring)
 		goto out;
 
 	err = xenbus_scanf(XBT_NIL, pdev->xdev->nodename, "num_devs", "%d",
@@ -499,10 +500,6 @@ static int xen_pcibk_reconfigure(struct xen_pcibk_device *pdev,
 		}
 	}
 
-	if (state != XenbusStateReconfiguring)
-		/* Make sure we only reconfigure once. */
-		goto out;
-
 	err = xenbus_switch_state(pdev->xdev, XenbusStateReconfigured);
 	if (err) {
 		xenbus_dev_fatal(pdev->xdev, err,
@@ -528,7 +525,7 @@ static void xen_pcibk_frontend_changed(struct xenbus_device *xdev,
 		break;
 
 	case XenbusStateReconfiguring:
-		xen_pcibk_reconfigure(pdev, XenbusStateReconfiguring);
+		xen_pcibk_reconfigure(pdev);
 		break;
 
 	case XenbusStateConnected:
@@ -667,15 +664,6 @@ static void xen_pcibk_be_watch(struct xenbus_watch *watch,
 		xen_pcibk_setup_backend(pdev);
 		break;
 
-	case XenbusStateInitialised:
-		/*
-		 * We typically move to Initialised when the first device was
-		 * added. Hence subsequent devices getting added may need
-		 * reconfiguring.
-		 */
-		xen_pcibk_reconfigure(pdev, XenbusStateInitialised);
-		break;
-
 	default:
 		break;
 	}
@@ -716,12 +704,14 @@ out:
 	return err;
 }
 
-static void xen_pcibk_xenbus_remove(struct xenbus_device *dev)
+static int xen_pcibk_xenbus_remove(struct xenbus_device *dev)
 {
 	struct xen_pcibk_device *pdev = dev_get_drvdata(&dev->dev);
 
 	if (pdev != NULL)
 		free_pdev(pdev);
+
+	return 0;
 }
 
 static const struct xenbus_device_id xen_pcibk_ids[] = {
@@ -741,9 +731,6 @@ const struct xen_pcibk_backend *__read_mostly xen_pcibk_backend;
 
 int __init xen_pcibk_xenbus_register(void)
 {
-	if (!xen_pcibk_pv_support())
-		return 0;
-
 	xen_pcibk_backend = &xen_pcibk_vpci_backend;
 	if (passthrough)
 		xen_pcibk_backend = &xen_pcibk_passthrough_backend;
@@ -753,6 +740,5 @@ int __init xen_pcibk_xenbus_register(void)
 
 void __exit xen_pcibk_xenbus_unregister(void)
 {
-	if (xen_pcibk_pv_support())
-		xenbus_unregister_driver(&xen_pcibk_driver);
+	xenbus_unregister_driver(&xen_pcibk_driver);
 }

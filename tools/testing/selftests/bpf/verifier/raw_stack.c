@@ -11,7 +11,7 @@
 	BPF_EXIT_INSN(),
 	},
 	.result = REJECT,
-	.errstr = "invalid read from stack R6 off=-8 size=8",
+	.errstr = "invalid read from stack off -8+0 size 8",
 	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 },
 {
@@ -59,7 +59,7 @@
 	BPF_EXIT_INSN(),
 	},
 	.result = REJECT,
-	.errstr = "invalid zero-sized read",
+	.errstr = "invalid stack type R3",
 	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 },
 {
@@ -132,7 +132,7 @@
 	BPF_EXIT_INSN(),
 	},
 	.result = REJECT,
-	.errstr = "R0 invalid mem access 'scalar'",
+	.errstr = "R0 invalid mem access 'inv'",
 	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 	.flags = F_NEEDS_EFFICIENT_UNALIGNED_ACCESS,
 },
@@ -162,7 +162,7 @@
 	BPF_EXIT_INSN(),
 	},
 	.result = REJECT,
-	.errstr = "R3 invalid mem access 'scalar'",
+	.errstr = "R3 invalid mem access 'inv'",
 	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 	.flags = F_NEEDS_EFFICIENT_UNALIGNED_ACCESS,
 },
@@ -205,7 +205,7 @@
 	BPF_EXIT_INSN(),
 	},
 	.result = REJECT,
-	.errstr = "invalid indirect access to stack R3 off=-513 size=8",
+	.errstr = "invalid stack type R3 off=-513 access_size=8",
 	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 },
 {
@@ -221,7 +221,7 @@
 	BPF_EXIT_INSN(),
 	},
 	.result = REJECT,
-	.errstr = "invalid indirect access to stack R3 off=-1 size=8",
+	.errstr = "invalid stack type R3 off=-1 access_size=8",
 	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 },
 {
@@ -285,7 +285,7 @@
 	BPF_EXIT_INSN(),
 	},
 	.result = REJECT,
-	.errstr = "invalid zero-sized read",
+	.errstr = "invalid stack type R3 off=-512 access_size=0",
 	.prog_type = BPF_PROG_TYPE_SCHED_CLS,
 },
 {

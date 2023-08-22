@@ -109,9 +109,9 @@ out:
 	return err;
 }
 
-static void authenc_geniv_ahash_done(void *data, int err)
+static void authenc_geniv_ahash_done(struct crypto_async_request *areq, int err)
 {
-	struct aead_request *req = data;
+	struct aead_request *req = areq->data;
 	struct crypto_aead *authenc = crypto_aead_reqtfm(req);
 	struct aead_instance *inst = aead_alg_instance(authenc);
 	struct authenc_instance_ctx *ictx = aead_instance_ctx(inst);
@@ -160,9 +160,10 @@ static int crypto_authenc_genicv(struct aead_request *req, unsigned int flags)
 	return 0;
 }
 
-static void crypto_authenc_encrypt_done(void *data, int err)
+static void crypto_authenc_encrypt_done(struct crypto_async_request *req,
+					int err)
 {
-	struct aead_request *areq = data;
+	struct aead_request *areq = req->data;
 
 	if (err)
 		goto out;
@@ -252,7 +253,7 @@ static int crypto_authenc_decrypt_tail(struct aead_request *req,
 		dst = scatterwalk_ffwd(areq_ctx->dst, req->dst, req->assoclen);
 
 	skcipher_request_set_tfm(skreq, ctx->enc);
-	skcipher_request_set_callback(skreq, flags,
+	skcipher_request_set_callback(skreq, aead_request_flags(req),
 				      req->base.complete, req->base.data);
 	skcipher_request_set_crypt(skreq, src, dst,
 				   req->cryptlen - authsize, req->iv);
@@ -260,9 +261,10 @@ static int crypto_authenc_decrypt_tail(struct aead_request *req,
 	return crypto_skcipher_decrypt(skreq);
 }
 
-static void authenc_verify_ahash_done(void *data, int err)
+static void authenc_verify_ahash_done(struct crypto_async_request *areq,
+				      int err)
 {
-	struct aead_request *req = data;
+	struct aead_request *req = areq->data;
 
 	if (err)
 		goto out;

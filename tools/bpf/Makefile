@@ -34,8 +34,8 @@ else
 endif
 
 FEATURE_USER = .bpf
-FEATURE_TESTS = libbfd disassembler-four-args disassembler-init-styled
-FEATURE_DISPLAY = libbfd
+FEATURE_TESTS = libbfd disassembler-four-args
+FEATURE_DISPLAY = libbfd disassembler-four-args
 
 check_feat := 1
 NON_CHECK_FEAT_TARGETS := clean bpftool_clean runqslower_clean resolve_btfids_clean
@@ -55,9 +55,6 @@ endif
 
 ifeq ($(feature-disassembler-four-args), 1)
 CFLAGS += -DDISASM_FOUR_ARGS_SIGNATURE
-endif
-ifeq ($(feature-disassembler-init-styled), 1)
-CFLAGS += -DDISASM_INIT_STYLED
 endif
 
 $(OUTPUT)%.yacc.c: $(srctree)/tools/bpf/%.y
@@ -100,7 +97,7 @@ clean: bpftool_clean runqslower_clean resolve_btfids_clean
 	$(Q)$(RM) -- $(OUTPUT)FEATURE-DUMP.bpf
 	$(Q)$(RM) -r -- $(OUTPUT)feature
 
-install: $(PROGS) bpftool_install
+install: $(PROGS) bpftool_install runqslower_install
 	$(call QUIET_INSTALL, bpf_jit_disasm)
 	$(Q)$(INSTALL) -m 0755 -d $(DESTDIR)$(prefix)/bin
 	$(Q)$(INSTALL) $(OUTPUT)bpf_jit_disasm $(DESTDIR)$(prefix)/bin/bpf_jit_disasm
@@ -121,6 +118,9 @@ bpftool_clean:
 runqslower:
 	$(call descend,runqslower)
 
+runqslower_install:
+	$(call descend,runqslower,install)
+
 runqslower_clean:
 	$(call descend,runqslower,clean)
 
@@ -131,5 +131,5 @@ resolve_btfids_clean:
 	$(call descend,resolve_btfids,clean)
 
 .PHONY: all install clean bpftool bpftool_install bpftool_clean \
-	runqslower runqslower_clean \
+	runqslower runqslower_install runqslower_clean \
 	resolve_btfids resolve_btfids_clean

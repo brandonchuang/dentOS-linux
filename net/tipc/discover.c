@@ -74,7 +74,6 @@ struct tipc_discoverer {
 /**
  * tipc_disc_init_msg - initialize a link setup message
  * @net: the applicable net namespace
- * @skb: buffer containing message
  * @mtyp: message type (request or response)
  * @b: ptr to bearer issuing message
  */
@@ -148,8 +147,8 @@ static bool tipc_disc_addr_trial_msg(struct tipc_discoverer *d,
 {
 	struct net *net = d->net;
 	struct tipc_net *tn = tipc_net(net);
+	bool trial = time_before(jiffies, tn->addr_trial_end);
 	u32 self = tipc_own_addr(net);
-	bool trial = time_before(jiffies, tn->addr_trial_end) && !self;
 
 	if (mtyp == DSC_TRIAL_FAIL_MSG) {
 		if (!trial)
@@ -168,7 +167,7 @@ static bool tipc_disc_addr_trial_msg(struct tipc_discoverer *d,
 
 	/* Apply trial address if we just left trial period */
 	if (!trial && !self) {
-		schedule_work(&tn->work);
+		tipc_sched_net_finalize(net, tn->trial_addr);
 		msg_set_prevnode(buf_msg(d->skb), tn->trial_addr);
 		msg_set_type(buf_msg(d->skb), DSC_REQ_MSG);
 	}
@@ -211,10 +210,7 @@ void tipc_disc_rcv(struct net *net, struct sk_buff *skb,
 	u32 self;
 	int err;
 
-	if (skb_linearize(skb)) {
-		kfree_skb(skb);
-		return;
-	}
+	skb_linearize(skb);
 	hdr = buf_msg(skb);
 
 	if (caps & TIPC_NODE_ID128)
@@ -311,7 +307,7 @@ static void tipc_disc_timeout(struct timer_list *t)
 	if (!time_before(jiffies, tn->addr_trial_end) && !tipc_own_addr(net)) {
 		mod_timer(&d->timer, jiffies + TIPC_DISC_INIT);
 		spin_unlock_bh(&d->lock);
-		schedule_work(&tn->work);
+		tipc_sched_net_finalize(net, tn->trial_addr);
 		return;
 	}
 
@@ -345,7 +341,7 @@ exit:
  * @dest: destination address for request messages
  * @skb: pointer to created frame
  *
- * Return: 0 if successful, otherwise -errno.
+ * Returns 0 if successful, otherwise -errno.
  */
 int tipc_disc_create(struct net *net, struct tipc_bearer *b,
 		     struct tipc_media_addr *dest, struct sk_buff **skb)
@@ -384,11 +380,11 @@ int tipc_disc_create(struct net *net, struct tipc_bearer *b,
 
 /**
  * tipc_disc_delete - destroy object sending periodic link setup requests
- * @d: ptr to link dest structure
+ * @d: ptr to link duest structure
  */
 void tipc_disc_delete(struct tipc_discoverer *d)
 {
-	timer_shutdown_sync(&d->timer);
+	del_timer_sync(&d->timer);
 	kfree_skb(d->skb);
 	kfree(d);
 }

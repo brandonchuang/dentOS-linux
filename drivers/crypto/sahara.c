@@ -15,8 +15,7 @@
 #include <crypto/internal/hash.h>
 #include <crypto/internal/skcipher.h>
 #include <crypto/scatterwalk.h>
-#include <crypto/sha1.h>
-#include <crypto/sha2.h>
+#include <crypto/sha.h>
 
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
@@ -26,10 +25,10 @@
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
-#include <linux/spinlock.h>
 
 #define SHA_BUFFER_LEN		PAGE_SIZE
 #define SAHARA_MAX_SHA_BLOCK_SIZE	SHA256_BLOCK_SIZE
@@ -196,7 +195,7 @@ struct sahara_dev {
 	void __iomem		*regs_base;
 	struct clk		*clk_ipg;
 	struct clk		*clk_ahb;
-	spinlock_t		queue_spinlock;
+	struct mutex		queue_mutex;
 	struct task_struct	*kthread;
 	struct completion	dma_completion;
 
@@ -487,13 +486,13 @@ static int sahara_hw_descriptor_create(struct sahara_dev *dev)
 
 	ret = dma_map_sg(dev->device, dev->in_sg, dev->nb_in_sg,
 			 DMA_TO_DEVICE);
-	if (!ret) {
+	if (ret != dev->nb_in_sg) {
 		dev_err(dev->device, "couldn't map in sg\n");
 		goto unmap_in;
 	}
 	ret = dma_map_sg(dev->device, dev->out_sg, dev->nb_out_sg,
 			 DMA_FROM_DEVICE);
-	if (!ret) {
+	if (ret != dev->nb_out_sg) {
 		dev_err(dev->device, "couldn't map out sg\n");
 		goto unmap_out;
 	}
@@ -642,9 +641,9 @@ static int sahara_aes_crypt(struct skcipher_request *req, unsigned long mode)
 
 	rctx->mode = mode;
 
-	spin_lock_bh(&dev->queue_spinlock);
+	mutex_lock(&dev->queue_mutex);
 	err = crypto_enqueue_request(&dev->queue, &req->base);
-	spin_unlock_bh(&dev->queue_spinlock);
+	mutex_unlock(&dev->queue_mutex);
 
 	wake_up_process(dev->kthread);
 
@@ -1043,13 +1042,13 @@ static int sahara_queue_manage(void *data)
 	do {
 		__set_current_state(TASK_INTERRUPTIBLE);
 
-		spin_lock_bh(&dev->queue_spinlock);
+		mutex_lock(&dev->queue_mutex);
 		backlog = crypto_get_backlog(&dev->queue);
 		async_req = crypto_dequeue_request(&dev->queue);
-		spin_unlock_bh(&dev->queue_spinlock);
+		mutex_unlock(&dev->queue_mutex);
 
 		if (backlog)
-			crypto_request_complete(backlog, -EINPROGRESS);
+			backlog->complete(backlog, -EINPROGRESS);
 
 		if (async_req) {
 			if (crypto_tfm_alg_type(async_req->tfm) ==
@@ -1065,7 +1064,7 @@ static int sahara_queue_manage(void *data)
 				ret = sahara_aes_process(req);
 			}
 
-			crypto_request_complete(async_req, ret);
+			async_req->complete(async_req, ret);
 
 			continue;
 		}
@@ -1092,9 +1091,9 @@ static int sahara_sha_enqueue(struct ahash_request *req, int last)
 		rctx->first = 1;
 	}
 
-	spin_lock_bh(&dev->queue_spinlock);
+	mutex_lock(&dev->queue_mutex);
 	ret = crypto_enqueue_request(&dev->queue, &req->base);
-	spin_unlock_bh(&dev->queue_spinlock);
+	mutex_unlock(&dev->queue_mutex);
 
 	wake_up_process(dev->kthread);
 
@@ -1350,6 +1349,12 @@ static void sahara_unregister_algs(struct sahara_dev *dev)
 			crypto_unregister_ahash(&sha_v4_algs[i]);
 }
 
+static const struct platform_device_id sahara_platform_ids[] = {
+	{ .name = "sahara-imx27" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(platform, sahara_platform_ids);
+
 static const struct of_device_id sahara_dt_ids[] = {
 	{ .compatible = "fsl,imx53-sahara" },
 	{ .compatible = "fsl,imx27-sahara" },
@@ -1449,7 +1454,7 @@ static int sahara_probe(struct platform_device *pdev)
 
 	crypto_init_queue(&dev->queue, SAHARA_QUEUE_LENGTH);
 
-	spin_lock_init(&dev->queue_spinlock);
+	mutex_init(&dev->queue_mutex);
 
 	dev_ptr = dev;
 
@@ -1534,6 +1539,7 @@ static struct platform_driver sahara_driver = {
 		.name	= SAHARA_NAME,
 		.of_match_table = sahara_dt_ids,
 	},
+	.id_table = sahara_platform_ids,
 };
 
 module_platform_driver(sahara_driver);

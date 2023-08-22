@@ -16,7 +16,6 @@
 #include <crypto/authenc.h>
 #include <linux/err.h>
 #include <linux/module.h>
-#include <net/gro.h>
 #include <net/ip.h>
 #include <net/xfrm.h>
 #include <net/esp.h>
@@ -56,11 +55,12 @@ static struct sk_buff *esp6_gro_receive(struct list_head *head,
 	__be32 seq;
 	__be32 spi;
 	int nhoff;
+	int err;
 
 	if (!pskb_pull(skb, offset))
 		return NULL;
 
-	if (xfrm_parse_spi(skb, IPPROTO_ESP, &spi, &seq) != 0)
+	if ((err = xfrm_parse_spi(skb, IPPROTO_ESP, &spi, &seq)) != 0)
 		goto out;
 
 	xo = xfrm_offload(skb);
@@ -144,10 +144,8 @@ static struct sk_buff *xfrm6_tunnel_gso_segment(struct xfrm_state *x,
 						struct sk_buff *skb,
 						netdev_features_t features)
 {
-	__be16 type = x->inner_mode.family == AF_INET ? htons(ETH_P_IP)
-						      : htons(ETH_P_IPV6);
-
-	return skb_eth_gso_segment(skb, features, type);
+	__skb_push(skb, skb->mac_len);
+	return skb_mac_gso_segment(skb, features);
 }
 
 static struct sk_buff *xfrm6_transport_gso_segment(struct xfrm_state *x,
@@ -199,9 +197,6 @@ static struct sk_buff *xfrm6_beet_gso_segment(struct xfrm_state *x,
 		skb->transport_header +=
 			ipv6_skip_exthdr(skb, 0, &proto, &frag);
 	}
-
-	if (proto == IPPROTO_IPIP)
-		skb_shinfo(skb)->gso_type |= SKB_GSO_IPXIP6;
 
 	__skb_pull(skb, skb_transport_offset(skb));
 	ops = rcu_dereference(inet6_offloads[proto]);
@@ -323,7 +318,7 @@ static int esp6_xmit(struct xfrm_state *x, struct sk_buff *skb,  netdev_features
 	esp.plen = esp.clen - skb->len - esp.tfclen;
 	esp.tailen = esp.tfclen + esp.plen + alen;
 
-	if (!hw_offload || !skb_is_gso(skb)) {
+	if (!hw_offload || (hw_offload && !skb_is_gso(skb))) {
 		esp.nfrags = esp6_output_head(x, skb, &esp);
 		if (esp.nfrags < 0)
 			return esp.nfrags;
@@ -344,9 +339,6 @@ static int esp6_xmit(struct xfrm_state *x, struct sk_buff *skb,  netdev_features
 		else
 			xo->seq.low += skb_shinfo(skb)->gso_segs;
 	}
-
-	if (xo->seq.low < seq)
-		xo->seq.hi++;
 
 	esp.seqno = cpu_to_be64(xo->seq.low + ((u64)xo->seq.hi << 32));
 
@@ -385,6 +377,7 @@ static const struct net_offload esp6_offload = {
 };
 
 static const struct xfrm_type_offload esp6_type_offload = {
+	.description	= "ESP6 OFFLOAD",
 	.owner		= THIS_MODULE,
 	.proto	     	= IPPROTO_ESP,
 	.input_tail	= esp6_input_tail,

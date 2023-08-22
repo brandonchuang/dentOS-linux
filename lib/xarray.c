@@ -157,7 +157,7 @@ static void xas_move_index(struct xa_state *xas, unsigned long offset)
 	xas->xa_index += offset << shift;
 }
 
-static void xas_next_offset(struct xa_state *xas)
+static void xas_advance(struct xa_state *xas)
 {
 	xas->xa_offset++;
 	xas_move_index(xas, xas->xa_offset);
@@ -207,8 +207,6 @@ static void *xas_descend(struct xa_state *xas, struct xa_node *node)
 	if (xa_is_sibling(entry)) {
 		offset = xa_to_sibling(entry);
 		entry = xa_entry(xas->xa, node, offset);
-		if (node->shift && xa_is_node(entry))
-			entry = XA_RETRY_ENTRY;
 	}
 
 	xas->xa_offset = offset;
@@ -264,10 +262,9 @@ static void xa_node_free(struct xa_node *node)
  * xas_destroy() - Free any resources allocated during the XArray operation.
  * @xas: XArray operation state.
  *
- * Most users will not need to call this function; it is called for you
- * by xas_nomem().
+ * This function is now internal-only.
  */
-void xas_destroy(struct xa_state *xas)
+static void xas_destroy(struct xa_state *xas)
 {
 	struct xa_node *next, *node = xas->xa_alloc;
 
@@ -305,7 +302,7 @@ bool xas_nomem(struct xa_state *xas, gfp_t gfp)
 	}
 	if (xas->xa->xa_flags & XA_FLAGS_ACCOUNT)
 		gfp |= __GFP_ACCOUNT;
-	xas->xa_alloc = kmem_cache_alloc_lru(radix_tree_node_cachep, xas->xa_lru, gfp);
+	xas->xa_alloc = kmem_cache_alloc(radix_tree_node_cachep, gfp);
 	if (!xas->xa_alloc)
 		return false;
 	xas->xa_alloc->parent = NULL;
@@ -337,10 +334,10 @@ static bool __xas_nomem(struct xa_state *xas, gfp_t gfp)
 		gfp |= __GFP_ACCOUNT;
 	if (gfpflags_allow_blocking(gfp)) {
 		xas_unlock_type(xas, lock_type);
-		xas->xa_alloc = kmem_cache_alloc_lru(radix_tree_node_cachep, xas->xa_lru, gfp);
+		xas->xa_alloc = kmem_cache_alloc(radix_tree_node_cachep, gfp);
 		xas_lock_type(xas, lock_type);
 	} else {
-		xas->xa_alloc = kmem_cache_alloc_lru(radix_tree_node_cachep, xas->xa_lru, gfp);
+		xas->xa_alloc = kmem_cache_alloc(radix_tree_node_cachep, gfp);
 	}
 	if (!xas->xa_alloc)
 		return false;
@@ -374,7 +371,7 @@ static void *xas_alloc(struct xa_state *xas, unsigned int shift)
 		if (xas->xa->xa_flags & XA_FLAGS_ACCOUNT)
 			gfp |= __GFP_ACCOUNT;
 
-		node = kmem_cache_alloc_lru(radix_tree_node_cachep, xas->xa_lru, gfp);
+		node = kmem_cache_alloc(radix_tree_node_cachep, gfp);
 		if (!node) {
 			xas_set_err(xas, -ENOMEM);
 			return NULL;
@@ -725,8 +722,6 @@ void xas_create_range(struct xa_state *xas)
 
 		for (;;) {
 			struct xa_node *node = xas->xa_node;
-			if (node->shift >= shift)
-				break;
 			xas->xa_node = xa_parent_locked(xas->xa, node);
 			xas->xa_offset = node->offset - 1;
 			if (node->offset != 0)
@@ -992,7 +987,7 @@ static void node_set_marks(struct xa_node *node, unsigned int offset,
  * xas_split_alloc() - Allocate memory for splitting an entry.
  * @xas: XArray operation state.
  * @entry: New entry which will be stored in the array.
- * @order: Current entry order.
+ * @order: New entry order.
  * @gfp: Memory allocation flags.
  *
  * This function should be called before calling xas_split().
@@ -1019,7 +1014,7 @@ void xas_split_alloc(struct xa_state *xas, void *entry, unsigned int order,
 		void *sibling = NULL;
 		struct xa_node *node;
 
-		node = kmem_cache_alloc_lru(radix_tree_node_cachep, xas->xa_lru, gfp);
+		node = kmem_cache_alloc(radix_tree_node_cachep, gfp);
 		if (!node)
 			goto nomem;
 		node->array = xas->xa;
@@ -1046,10 +1041,9 @@ EXPORT_SYMBOL_GPL(xas_split_alloc);
  * xas_split() - Split a multi-index entry into smaller entries.
  * @xas: XArray operation state.
  * @entry: New entry to store in the array.
- * @order: Current entry order.
+ * @order: New entry order.
  *
- * The size of the new entries is set in @xas.  The value in @entry is
- * copied to all the replacement entries.
+ * The value in the entry is copied to all the replacement entries.
  *
  * Context: Any context.  The caller should hold the xa_lock.
  */
@@ -1084,7 +1078,6 @@ void xas_split(struct xa_state *xas, void *entry, unsigned int order)
 					xa_mk_node(child));
 			if (xa_is_value(curr))
 				values--;
-			xas_update(xas, child);
 		} else {
 			unsigned int canon = offset - xas->xa_sibs;
 
@@ -1099,7 +1092,6 @@ void xas_split(struct xa_state *xas, void *entry, unsigned int order)
 	} while (offset-- > xas->xa_offset);
 
 	node->nr_values += values;
-	xas_update(xas, node);
 }
 EXPORT_SYMBOL_GPL(xas_split);
 #endif
@@ -1257,7 +1249,7 @@ void *xas_find(struct xa_state *xas, unsigned long max)
 		xas->xa_offset = ((xas->xa_index - 1) & XA_CHUNK_MASK) + 1;
 	}
 
-	xas_next_offset(xas);
+	xas_advance(xas);
 
 	while (xas->xa_node && (xas->xa_index <= max)) {
 		if (unlikely(xas->xa_offset == XA_CHUNK_SIZE)) {
@@ -1275,7 +1267,7 @@ void *xas_find(struct xa_state *xas, unsigned long max)
 		if (entry && !xa_is_sibling(entry))
 			return entry;
 
-		xas_next_offset(xas);
+		xas_advance(xas);
 	}
 
 	if (!xas->xa_node)

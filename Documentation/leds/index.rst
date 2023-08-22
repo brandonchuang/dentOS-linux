@@ -26,4 +26,3 @@ LEDs
    leds-lp55xx
    leds-mlxcpld
    leds-sc27xx
-   leds-qcom-lpg

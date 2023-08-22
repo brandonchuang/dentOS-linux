@@ -7,14 +7,12 @@ set -e
 sfile="$(readlink -f "$0")"
 outdir="$(pwd)"
 tarfile=$1
-cpio_dir=$outdir/${tarfile%/*}/.tmp_cpio_dir
+cpio_dir=$outdir/$tarfile.tmp
 
 dir_list="
 include/
 arch/$SRCARCH/include/
 "
-
-type cpio > /dev/null
 
 # Support incremental builds by skipping archive generation
 # if timestamps of files being archived are not changed.
@@ -33,18 +31,18 @@ if [ "$building_out_of_srctree" ]; then
 fi
 all_dirs="$all_dirs $dir_list"
 
-# include/generated/utsversion.h is ignored because it is generated after this
-# script is executed. (utsversion.h is unneeded for kheaders)
+# include/generated/compile.h is ignored because it is touched even when none
+# of the source files changed.
 #
 # When Kconfig regenerates include/generated/autoconf.h, its timestamp is
 # updated, but the contents might be still the same. When any CONFIG option is
-# changed, Kconfig touches the corresponding timestamp file include/config/*.
+# changed, Kconfig touches the corresponding timestamp file include/config/*.h.
 # Hence, the md5sum detects the configuration change anyway. We do not need to
 # check include/generated/autoconf.h explicitly.
 #
 # Ignore them for md5 calculation to avoid pointless regeneration.
 headers_md5="$(find $all_dirs -name "*.h"			|
-		grep -v "include/generated/utsversion.h"	|
+		grep -v "include/generated/compile.h"	|
 		grep -v "include/generated/autoconf.h"	|
 		xargs ls -l | md5sum | cut -d ' ' -f1)"
 
@@ -58,7 +56,9 @@ if [ -f kernel/kheaders.md5 ] &&
 		exit
 fi
 
-echo "  GEN     $tarfile"
+if [ "${quiet}" != "silent_" ]; then
+       echo "  GEN     $tarfile"
+fi
 
 rm -rf $cpio_dir
 mkdir $cpio_dir
@@ -76,7 +76,7 @@ fi
 # of tree builds having stale headers in srctree. Just silence CPIO for now.
 for f in $dir_list;
 	do find "$f" -name "*.h";
-done | cpio --quiet -pdu $cpio_dir >/dev/null 2>&1
+done | cpio --quiet -pd $cpio_dir >/dev/null 2>&1
 
 # Remove comments except SDPX lines
 find $cpio_dir -type f -print0 |

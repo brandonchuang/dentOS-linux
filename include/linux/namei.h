@@ -36,6 +36,9 @@ enum {LAST_NORM, LAST_ROOT, LAST_DOT, LAST_DOTDOT};
 
 /* internal use only */
 #define LOOKUP_PARENT		0x0010
+#define LOOKUP_JUMPED		0x1000
+#define LOOKUP_ROOT		0x2000
+#define LOOKUP_ROOT_GRABBED	0x0008
 
 /* Scoping flags for lookup. */
 #define LOOKUP_NO_SYMLINKS	0x010000 /* No symlink crossing. */
@@ -43,7 +46,6 @@ enum {LAST_NORM, LAST_ROOT, LAST_DOT, LAST_DOTDOT};
 #define LOOKUP_NO_XDEV		0x040000 /* No mountpoint crossing. */
 #define LOOKUP_BENEATH		0x080000 /* No escaping from starting point. */
 #define LOOKUP_IN_ROOT		0x100000 /* Treat dirfd as fs root. */
-#define LOOKUP_CACHED		0x200000 /* Only do cached lookup */
 /* LOOKUP_* flags which do scope-related checks based on the dirfd. */
 #define LOOKUP_IS_SCOPED (LOOKUP_BENEATH | LOOKUP_IN_ROOT)
 
@@ -68,22 +70,15 @@ extern struct dentry *try_lookup_one_len(const char *, struct dentry *, int);
 extern struct dentry *lookup_one_len(const char *, struct dentry *, int);
 extern struct dentry *lookup_one_len_unlocked(const char *, struct dentry *, int);
 extern struct dentry *lookup_positive_unlocked(const char *, struct dentry *, int);
-struct dentry *lookup_one(struct mnt_idmap *, const char *, struct dentry *, int);
-struct dentry *lookup_one_unlocked(struct mnt_idmap *idmap,
-				   const char *name, struct dentry *base,
-				   int len);
-struct dentry *lookup_one_positive_unlocked(struct mnt_idmap *idmap,
-					    const char *name,
-					    struct dentry *base, int len);
 
 extern int follow_down_one(struct path *);
-extern int follow_down(struct path *path, unsigned int flags);
+extern int follow_down(struct path *);
 extern int follow_up(struct path *);
 
 extern struct dentry *lock_rename(struct dentry *, struct dentry *);
 extern void unlock_rename(struct dentry *, struct dentry *);
 
-extern int __must_check nd_jump_link(const struct path *path);
+extern int __must_check nd_jump_link(struct path *path);
 
 static inline void nd_terminate_link(void *name, size_t len, size_t maxlen)
 {

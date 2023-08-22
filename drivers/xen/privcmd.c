@@ -257,7 +257,7 @@ static long privcmd_ioctl_mmap(struct file *file, void __user *udata)
 	LIST_HEAD(pagelist);
 	struct mmap_gfn_state state;
 
-	/* We only support privcmd_ioctl_mmap_batch for non-auto-translated. */
+	/* We only support privcmd_ioctl_mmap_batch for auto translated. */
 	if (xen_feature(XENFEAT_auto_translated_physmap))
 		return -ENOSYS;
 
@@ -282,7 +282,7 @@ static long privcmd_ioctl_mmap(struct file *file, void __user *udata)
 						     struct page, lru);
 		struct privcmd_mmap_entry *msg = page_address(page);
 
-		vma = vma_lookup(mm, msg->va);
+		vma = find_vma(mm, msg->va);
 		rc = -EINVAL;
 
 		if (!vma || (msg->va != vma->vm_start) || vma->vm_private_data)
@@ -420,7 +420,7 @@ static int alloc_empty_pages(struct vm_area_struct *vma, int numpgs)
 	int rc;
 	struct page **pages;
 
-	pages = kvcalloc(numpgs, sizeof(pages[0]), GFP_KERNEL);
+	pages = kcalloc(numpgs, sizeof(pages[0]), GFP_KERNEL);
 	if (pages == NULL)
 		return -ENOMEM;
 
@@ -428,7 +428,7 @@ static int alloc_empty_pages(struct vm_area_struct *vma, int numpgs)
 	if (rc != 0) {
 		pr_warn("%s Could not alloc %d pfns rc:%d\n", __func__,
 			numpgs, rc);
-		kvfree(pages);
+		kfree(pages);
 		return -ENOMEM;
 	}
 	BUG_ON(vma->vm_private_data != NULL);
@@ -581,30 +581,27 @@ static int lock_pages(
 	struct privcmd_dm_op_buf kbufs[], unsigned int num,
 	struct page *pages[], unsigned int nr_pages, unsigned int *pinned)
 {
-	unsigned int i, off = 0;
+	unsigned int i;
 
-	for (i = 0; i < num; ) {
+	for (i = 0; i < num; i++) {
 		unsigned int requested;
 		int page_count;
 
 		requested = DIV_ROUND_UP(
 			offset_in_page(kbufs[i].uptr) + kbufs[i].size,
-			PAGE_SIZE) - off;
+			PAGE_SIZE);
 		if (requested > nr_pages)
 			return -ENOSPC;
 
 		page_count = pin_user_pages_fast(
-			(unsigned long)kbufs[i].uptr + off * PAGE_SIZE,
+			(unsigned long) kbufs[i].uptr,
 			requested, FOLL_WRITE, pages);
-		if (page_count <= 0)
-			return page_count ? : -EFAULT;
+		if (page_count < 0)
+			return page_count;
 
 		*pinned += page_count;
 		nr_pages -= page_count;
 		pages += page_count;
-
-		off = (requested == page_count) ? 0 : off + page_count;
-		i += !off;
 	}
 
 	return 0;
@@ -680,8 +677,10 @@ static long privcmd_ioctl_dm_op(struct file *file, void __user *udata)
 	}
 
 	rc = lock_pages(kbufs, kdata.num, pages, nr_pages, &pinned);
-	if (rc < 0)
+	if (rc < 0) {
+		nr_pages = pinned;
 		goto out;
+	}
 
 	for (i = 0; i < kdata.num; i++) {
 		set_xen_guest_handle(xbufs[i].h, kbufs[i].uptr);
@@ -693,7 +692,7 @@ static long privcmd_ioctl_dm_op(struct file *file, void __user *udata)
 	xen_preemptible_hcall_end();
 
 out:
-	unlock_pages(pages, pinned);
+	unlock_pages(pages, nr_pages);
 	kfree(xbufs);
 	kfree(pages);
 	kfree(kbufs);
@@ -760,7 +759,7 @@ static long privcmd_ioctl_mmap_resource(struct file *file,
 		goto out;
 	}
 
-	pfns = kcalloc(kdata.num, sizeof(*pfns), GFP_KERNEL | __GFP_NOWARN);
+	pfns = kcalloc(kdata.num, sizeof(*pfns), GFP_KERNEL);
 	if (!pfns) {
 		rc = -ENOMEM;
 		goto out;
@@ -804,21 +803,21 @@ static long privcmd_ioctl_mmap_resource(struct file *file,
 		unsigned int domid =
 			(xdata.flags & XENMEM_rsrc_acq_caller_owned) ?
 			DOMID_SELF : kdata.dom;
-		int num, *errs = (int *)pfns;
+		int num;
 
-		BUILD_BUG_ON(sizeof(*errs) > sizeof(*pfns));
 		num = xen_remap_domain_mfn_array(vma,
 						 kdata.addr & PAGE_MASK,
-						 pfns, kdata.num, errs,
+						 pfns, kdata.num, (int *)pfns,
 						 vma->vm_page_prot,
-						 domid);
+						 domid,
+						 vma->vm_private_data);
 		if (num < 0)
 			rc = num;
 		else if (num != kdata.num) {
 			unsigned int i;
 
 			for (i = 0; i < num; i++) {
-				rc = errs[i];
+				rc = pfns[i];
 				if (rc < 0)
 					break;
 			}
@@ -913,7 +912,7 @@ static void privcmd_close(struct vm_area_struct *vma)
 	else
 		pr_crit("unable to unmap MFN range: leaking %d pages. rc=%d\n",
 			numpgs, rc);
-	kvfree(pages);
+	kfree(pages);
 }
 
 static vm_fault_t privcmd_fault(struct vm_fault *vmf)
@@ -934,8 +933,8 @@ static int privcmd_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	/* DONTCOPY is essential for Xen because copy_page_range doesn't know
 	 * how to recreate these mappings */
-	vm_flags_set(vma, VM_IO | VM_PFNMAP | VM_DONTCOPY |
-			 VM_DONTEXPAND | VM_DONTDUMP);
+	vma->vm_flags |= VM_IO | VM_PFNMAP | VM_DONTCOPY |
+			 VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_ops = &privcmd_vm_ops;
 	vma->vm_private_data = NULL;
 

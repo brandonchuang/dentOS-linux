@@ -267,18 +267,11 @@ static struct ubifs_znode *dirty_cow_znode(struct ubifs_info *c,
 	if (zbr->len) {
 		err = insert_old_idx(c, zbr->lnum, zbr->offs);
 		if (unlikely(err))
-			/*
-			 * Obsolete znodes will be freed by tnc_destroy_cnext()
-			 * or free_obsolete_znodes(), copied up znodes should
-			 * be added back to tnc and freed by
-			 * ubifs_destroy_tnc_subtree().
-			 */
-			goto out;
+			return ERR_PTR(err);
 		err = add_idx_dirt(c, zbr->lnum, zbr->len);
 	} else
 		err = 0;
 
-out:
 	zbr->znode = zn;
 	zbr->lnum = 0;
 	zbr->offs = 0;
@@ -323,7 +316,7 @@ static int lnc_add(struct ubifs_info *c, struct ubifs_zbranch *zbr,
 	err = ubifs_validate_entry(c, dent);
 	if (err) {
 		dump_stack();
-		ubifs_dump_node(c, dent, zbr->len);
+		ubifs_dump_node(c, dent);
 		return err;
 	}
 
@@ -356,7 +349,7 @@ static int lnc_add_directly(struct ubifs_info *c, struct ubifs_zbranch *zbr,
 	err = ubifs_validate_entry(c, node);
 	if (err) {
 		dump_stack();
-		ubifs_dump_node(c, node, zbr->len);
+		ubifs_dump_node(c, node);
 		return err;
 	}
 
@@ -384,7 +377,7 @@ static void lnc_free(struct ubifs_zbranch *zbr)
  *
  * This function reads a "hashed" node defined by @zbr from the leaf node cache
  * (in it is there) or from the hash media, in which case the node is also
- * added to LNC. Returns zero in case of success or a negative error
+ * added to LNC. Returns zero in case of success or a negative negative error
  * code in case of failure.
  */
 static int tnc_read_hashed_node(struct ubifs_info *c, struct ubifs_zbranch *zbr,
@@ -1706,7 +1699,7 @@ static int validate_data_node(struct ubifs_info *c, void *buf,
 		goto out_err;
 	}
 
-	err = ubifs_check_node(c, buf, zbr->len, zbr->lnum, zbr->offs, 0, 0);
+	err = ubifs_check_node(c, buf, zbr->lnum, zbr->offs, 0, 0);
 	if (err) {
 		ubifs_err(c, "expected node type %d", UBIFS_DATA_NODE);
 		goto out;
@@ -1740,7 +1733,7 @@ out_err:
 	err = -EINVAL;
 out:
 	ubifs_err(c, "bad node at LEB %d:%d", zbr->lnum, zbr->offs);
-	ubifs_dump_node(c, buf, zbr->len);
+	ubifs_dump_node(c, buf);
 	dump_stack();
 	return err;
 }
@@ -3060,21 +3053,6 @@ static void tnc_destroy_cnext(struct ubifs_info *c)
 		cnext = cnext->cnext;
 		if (ubifs_zn_obsolete(znode))
 			kfree(znode);
-		else if (!ubifs_zn_cow(znode)) {
-			/*
-			 * Don't forget to update clean znode count after
-			 * committing failed, because ubifs will check this
-			 * count while closing tnc. Non-obsolete znode could
-			 * be re-dirtied during committing process, so dirty
-			 * flag is untrustable. The flag 'COW_ZNODE' is set
-			 * for each dirty znode before committing, and it is
-			 * cleared as long as the znode become clean, so we
-			 * can statistic clean znode count according to this
-			 * flag.
-			 */
-			atomic_long_inc(&c->clean_zn_cnt);
-			atomic_long_inc(&ubifs_clean_zn_cnt);
-		}
 	} while (cnext && cnext != c->cnext);
 }
 

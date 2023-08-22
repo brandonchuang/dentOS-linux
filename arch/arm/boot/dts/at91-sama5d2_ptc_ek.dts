@@ -11,7 +11,6 @@
 #include "sama5d2-pinfunc.h"
 #include <dt-bindings/mfd/atmel-flexcom.h>
 #include <dt-bindings/gpio/gpio.h>
-#include <dt-bindings/input/input.h>
 #include <dt-bindings/pinctrl/at91.h>
 
 / {
@@ -20,9 +19,9 @@
 
 	aliases {
 		serial0 = &uart0;	/* DBGU */
-		i2c0 = &i2c0;	/* mikroBUS 1 */
-		i2c1 = &i2c1;	/* XPRO EXT1 */
-		i2c2 = &i2c2;
+		i2c0	= &i2c0;	/* mikroBUS 1 */
+		i2c1	= &i2c1;	/* XPRO EXT1 */
+		i2c2	= &i2c2;
 	};
 
 	chosen {
@@ -93,12 +92,12 @@
 							reg = <0x40000 0xc0000>;
 						};
 
-						bootloaderenvred@100000 {
+						bootloaderenvred@0x100000 {
 							label = "bootloader env redundant";
 							reg = <0x100000 0x40000>;
 						};
 
-						bootloaderenv@140000 {
+						bootloaderenv@0x140000 {
 							label = "bootloader env";
 							reg = <0x140000 0x40000>;
 						};
@@ -139,8 +138,6 @@
 			macb0: ethernet@f8008000 {
 				pinctrl-names = "default";
 				pinctrl-0 = <&pinctrl_macb0_default &pinctrl_macb0_phy_irq>;
-				#address-cells = <1>;
-				#size-cells = <0>;
 				phy-mode = "rmii";
 				status = "okay";
 
@@ -205,10 +202,11 @@
 			};
 
 			shdwc@f8048010 {
-				debounce-delay-us = <976>;
+				atmel,shdwc-debouncer = <976>;
 
 				input@0 {
 					reg = <0>;
+					atmel,wakeup-type = "low";
 				};
 			};
 
@@ -396,16 +394,16 @@
 		};
 	};
 
-	gpio-keys {
+	gpio_keys {
 		compatible = "gpio-keys";
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_key_gpio_default>;
 
-		button-1 {
+		bp1 {
 			label = "PB_USER";
 			gpios = <&pioA PIN_PA10 GPIO_ACTIVE_LOW>;
-			linux,code = <KEY_PROG1>;
+			linux,code = <0x104>;
 			wakeup-source;
 		};
 	};
@@ -416,17 +414,17 @@
 		pinctrl-0 = <&pinctrl_led_gpio_default>;
 		status = "okay";
 
-		led-red {
+		red {
 			label = "red";
 			gpios = <&pioA PIN_PB10 GPIO_ACTIVE_HIGH>;
 		};
 
-		led-green {
+		green {
 			label = "green";
 			gpios = <&pioA PIN_PB8 GPIO_ACTIVE_HIGH>;
 		};
 
-		led-blue {
+		blue {
 			label = "blue";
 			gpios = <&pioA PIN_PB6 GPIO_ACTIVE_HIGH>;
 			linux,default-trigger = "heartbeat";

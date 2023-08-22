@@ -4,10 +4,10 @@
 #include <linux/linkage.h>
 #include <asm/errno.h>
 #include <asm/cpufeatures.h>
-#include <asm/alternative.h>
+#include <asm/alternative-asm.h>
 #include <asm/export.h>
 
-.section .noinstr.text, "ax"
+.pushsection .noinstr.text, "ax"
 
 /*
  * We build a jump to memcpy_orig by default which gets NOPped out on
@@ -27,7 +27,8 @@
  * Output:
  * rax original destination
  */
-SYM_TYPED_FUNC_START(__memcpy)
+SYM_FUNC_START_ALIAS(__memcpy)
+SYM_FUNC_START_WEAK(memcpy)
 	ALTERNATIVE_2 "jmp memcpy_orig", "", X86_FEATURE_REP_GOOD, \
 		      "jmp memcpy_erms", X86_FEATURE_ERMS
 
@@ -38,12 +39,11 @@ SYM_TYPED_FUNC_START(__memcpy)
 	rep movsq
 	movl %edx, %ecx
 	rep movsb
-	RET
-SYM_FUNC_END(__memcpy)
-EXPORT_SYMBOL(__memcpy)
-
-SYM_FUNC_ALIAS(memcpy, __memcpy)
+	ret
+SYM_FUNC_END(memcpy)
+SYM_FUNC_END_ALIAS(__memcpy)
 EXPORT_SYMBOL(memcpy)
+EXPORT_SYMBOL(__memcpy)
 
 /*
  * memcpy_erms() - enhanced fast string memcpy. This is faster and
@@ -53,7 +53,7 @@ SYM_FUNC_START_LOCAL(memcpy_erms)
 	movq %rdi, %rax
 	movq %rdx, %rcx
 	rep movsb
-	RET
+	ret
 SYM_FUNC_END(memcpy_erms)
 
 SYM_FUNC_START_LOCAL(memcpy_orig)
@@ -137,7 +137,7 @@ SYM_FUNC_START_LOCAL(memcpy_orig)
 	movq %r9,	1*8(%rdi)
 	movq %r10,	-2*8(%rdi, %rdx)
 	movq %r11,	-1*8(%rdi, %rdx)
-	RET
+	retq
 	.p2align 4
 .Lless_16bytes:
 	cmpl $8,	%edx
@@ -149,7 +149,7 @@ SYM_FUNC_START_LOCAL(memcpy_orig)
 	movq -1*8(%rsi, %rdx),	%r9
 	movq %r8,	0*8(%rdi)
 	movq %r9,	-1*8(%rdi, %rdx)
-	RET
+	retq
 	.p2align 4
 .Lless_8bytes:
 	cmpl $4,	%edx
@@ -162,7 +162,7 @@ SYM_FUNC_START_LOCAL(memcpy_orig)
 	movl -4(%rsi, %rdx), %r8d
 	movl %ecx, (%rdi)
 	movl %r8d, -4(%rdi, %rdx)
-	RET
+	retq
 	.p2align 4
 .Lless_3bytes:
 	subl $1, %edx
@@ -180,6 +180,7 @@ SYM_FUNC_START_LOCAL(memcpy_orig)
 	movb %cl, (%rdi)
 
 .Lend:
-	RET
+	retq
 SYM_FUNC_END(memcpy_orig)
 
+.popsection

@@ -126,8 +126,8 @@ int mv88e6xxx_g2_device_mapping_write(struct mv88e6xxx_chip *chip, int target,
 
 /* Offset 0x07: Trunk Mask Table register */
 
-int mv88e6xxx_g2_trunk_mask_write(struct mv88e6xxx_chip *chip, int num,
-				  bool hash, u16 mask)
+static int mv88e6xxx_g2_trunk_mask_write(struct mv88e6xxx_chip *chip, int num,
+					 bool hash, u16 mask)
 {
 	u16 val = (num << 12) | (mask & mv88e6xxx_port_mask(chip));
 
@@ -140,8 +140,8 @@ int mv88e6xxx_g2_trunk_mask_write(struct mv88e6xxx_chip *chip, int num,
 
 /* Offset 0x08: Trunk Mapping Table register */
 
-int mv88e6xxx_g2_trunk_mapping_write(struct mv88e6xxx_chip *chip, int id,
-				     u16 map)
+static int mv88e6xxx_g2_trunk_mapping_write(struct mv88e6xxx_chip *chip, int id,
+					    u16 map)
 {
 	const u16 port_mask = BIT(mv88e6xxx_num_ports(chip)) - 1;
 	u16 val = (id << 11) | (map & port_mask);
@@ -237,23 +237,6 @@ static int mv88e6xxx_g2_pvt_op(struct mv88e6xxx_chip *chip, int src_dev,
 		return err;
 
 	return mv88e6xxx_g2_pvt_op_wait(chip);
-}
-
-int mv88e6xxx_g2_pvt_read(struct mv88e6xxx_chip *chip, int src_dev,
-			  int src_port, u16 *data)
-{
-	int err;
-
-	err = mv88e6xxx_g2_pvt_op_wait(chip);
-	if (err)
-		return err;
-
-	err = mv88e6xxx_g2_pvt_op(chip, src_dev, src_port,
-				  MV88E6XXX_G2_PVT_ADDR_OP_READ);
-	if (err)
-		return err;
-
-	return mv88e6xxx_g2_read(chip, MV88E6XXX_G2_PVT_DATA, data);
 }
 
 int mv88e6xxx_g2_pvt_write(struct mv88e6xxx_chip *chip, int src_dev,
@@ -739,18 +722,20 @@ static int mv88e6xxx_g2_smi_phy_read_data_c45(struct mv88e6xxx_chip *chip,
 	return mv88e6xxx_g2_read(chip, MV88E6XXX_G2_SMI_PHY_DATA, data);
 }
 
-static int _mv88e6xxx_g2_smi_phy_read_c45(struct mv88e6xxx_chip *chip,
-					  bool external, int port, int devad,
-					  int reg, u16 *data)
+static int mv88e6xxx_g2_smi_phy_read_c45(struct mv88e6xxx_chip *chip,
+					 bool external, int port, int reg,
+					 u16 *data)
 {
+	int dev = (reg >> 16) & 0x1f;
+	int addr = reg & 0xffff;
 	int err;
 
-	err = mv88e6xxx_g2_smi_phy_write_addr_c45(chip, external, port, devad,
-						  reg);
+	err = mv88e6xxx_g2_smi_phy_write_addr_c45(chip, external, port, dev,
+						  addr);
 	if (err)
 		return err;
 
-	return mv88e6xxx_g2_smi_phy_read_data_c45(chip, external, port, devad,
+	return mv88e6xxx_g2_smi_phy_read_data_c45(chip, external, port, dev,
 						  data);
 }
 
@@ -769,63 +754,49 @@ static int mv88e6xxx_g2_smi_phy_write_data_c45(struct mv88e6xxx_chip *chip,
 	return mv88e6xxx_g2_smi_phy_access_c45(chip, external, op, port, dev);
 }
 
-static int _mv88e6xxx_g2_smi_phy_write_c45(struct mv88e6xxx_chip *chip,
-					   bool external, int port, int devad,
-					   int reg, u16 data)
+static int mv88e6xxx_g2_smi_phy_write_c45(struct mv88e6xxx_chip *chip,
+					  bool external, int port, int reg,
+					  u16 data)
 {
+	int dev = (reg >> 16) & 0x1f;
+	int addr = reg & 0xffff;
 	int err;
 
-	err = mv88e6xxx_g2_smi_phy_write_addr_c45(chip, external, port, devad,
-						  reg);
+	err = mv88e6xxx_g2_smi_phy_write_addr_c45(chip, external, port, dev,
+						  addr);
 	if (err)
 		return err;
 
-	return mv88e6xxx_g2_smi_phy_write_data_c45(chip, external, port, devad,
+	return mv88e6xxx_g2_smi_phy_write_data_c45(chip, external, port, dev,
 						   data);
 }
 
-int mv88e6xxx_g2_smi_phy_read_c22(struct mv88e6xxx_chip *chip,
-				  struct mii_bus *bus,
-				  int addr, int reg, u16 *val)
+int mv88e6xxx_g2_smi_phy_read(struct mv88e6xxx_chip *chip, struct mii_bus *bus,
+			      int addr, int reg, u16 *val)
 {
 	struct mv88e6xxx_mdio_bus *mdio_bus = bus->priv;
 	bool external = mdio_bus->external;
+
+	if (reg & MII_ADDR_C45)
+		return mv88e6xxx_g2_smi_phy_read_c45(chip, external, addr, reg,
+						     val);
 
 	return mv88e6xxx_g2_smi_phy_read_data_c22(chip, external, addr, reg,
 						  val);
 }
 
-int mv88e6xxx_g2_smi_phy_read_c45(struct mv88e6xxx_chip *chip,
-				  struct mii_bus *bus, int addr, int devad,
-				  int reg, u16 *val)
+int mv88e6xxx_g2_smi_phy_write(struct mv88e6xxx_chip *chip, struct mii_bus *bus,
+			       int addr, int reg, u16 val)
 {
 	struct mv88e6xxx_mdio_bus *mdio_bus = bus->priv;
 	bool external = mdio_bus->external;
 
-	return _mv88e6xxx_g2_smi_phy_read_c45(chip, external, addr, devad, reg,
-					      val);
-}
-
-int mv88e6xxx_g2_smi_phy_write_c22(struct mv88e6xxx_chip *chip,
-				   struct mii_bus *bus, int addr, int reg,
-				   u16 val)
-{
-	struct mv88e6xxx_mdio_bus *mdio_bus = bus->priv;
-	bool external = mdio_bus->external;
+	if (reg & MII_ADDR_C45)
+		return mv88e6xxx_g2_smi_phy_write_c45(chip, external, addr, reg,
+						      val);
 
 	return mv88e6xxx_g2_smi_phy_write_data_c22(chip, external, addr, reg,
 						   val);
-}
-
-int mv88e6xxx_g2_smi_phy_write_c45(struct mv88e6xxx_chip *chip,
-				   struct mii_bus *bus, int addr, int devad,
-				   int reg, u16 val)
-{
-	struct mv88e6xxx_mdio_bus *mdio_bus = bus->priv;
-	bool external = mdio_bus->external;
-
-	return _mv88e6xxx_g2_smi_phy_write_c45(chip, external, addr, devad, reg,
-					       val);
 }
 
 /* Offset 0x1B: Watchdog Control */

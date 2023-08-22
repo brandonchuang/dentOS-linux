@@ -26,7 +26,6 @@
  *  Yaozu (Eddie) Dong <eddie.dong@intel.com>
  *  Based on Xen 3.1 code.
  */
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/kvm_host.h>
 #include <linux/kvm.h>
@@ -55,7 +54,9 @@ static void kvm_ioapic_update_eoi_one(struct kvm_vcpu *vcpu,
 				      int trigger_mode,
 				      int pin);
 
-static unsigned long ioapic_read_indirect(struct kvm_ioapic *ioapic)
+static unsigned long ioapic_read_indirect(struct kvm_ioapic *ioapic,
+					  unsigned long addr,
+					  unsigned long length)
 {
 	unsigned long result = 0;
 
@@ -95,7 +96,7 @@ static unsigned long ioapic_read_indirect(struct kvm_ioapic *ioapic)
 static void rtc_irq_eoi_tracking_reset(struct kvm_ioapic *ioapic)
 {
 	ioapic->rtc_status.pending_eoi = 0;
-	bitmap_zero(ioapic->rtc_status.dest_map.map, KVM_MAX_VCPU_IDS);
+	bitmap_zero(ioapic->rtc_status.dest_map.map, KVM_MAX_VCPU_ID);
 }
 
 static void kvm_rtc_eoi_tracking_restore_all(struct kvm_ioapic *ioapic);
@@ -148,7 +149,7 @@ void kvm_rtc_eoi_tracking_restore_one(struct kvm_vcpu *vcpu)
 static void kvm_rtc_eoi_tracking_restore_all(struct kvm_ioapic *ioapic)
 {
 	struct kvm_vcpu *vcpu;
-	unsigned long i;
+	int i;
 
 	if (RTC_GSI >= IOAPIC_NUM_PINS)
 		return;
@@ -183,7 +184,7 @@ static bool rtc_irq_check_coalesced(struct kvm_ioapic *ioapic)
 
 static void ioapic_lazy_update_eoi(struct kvm_ioapic *ioapic, int irq)
 {
-	unsigned long i;
+	int i;
 	struct kvm_vcpu *vcpu;
 	union kvm_ioapic_redirect_entry *entry = &ioapic->redirtbl[irq];
 
@@ -318,8 +319,8 @@ static void ioapic_write_indirect(struct kvm_ioapic *ioapic, u32 val)
 	unsigned index;
 	bool mask_before, mask_after;
 	union kvm_ioapic_redirect_entry *e;
+	unsigned long vcpu_bitmap;
 	int old_remote_irr, old_delivery_status, old_dest_id, old_dest_mode;
-	DECLARE_BITMAP(vcpu_bitmap, KVM_MAX_VCPUS);
 
 	switch (ioapic->ioregsel) {
 	case IOAPIC_REG_VERSION:
@@ -383,9 +384,9 @@ static void ioapic_write_indirect(struct kvm_ioapic *ioapic, u32 val)
 			irq.shorthand = APIC_DEST_NOSHORT;
 			irq.dest_id = e->fields.dest_id;
 			irq.msi_redir_hint = false;
-			bitmap_zero(vcpu_bitmap, KVM_MAX_VCPUS);
+			bitmap_zero(&vcpu_bitmap, 16);
 			kvm_bitmap_or_dest_vcpus(ioapic->kvm, &irq,
-						 vcpu_bitmap);
+						 &vcpu_bitmap);
 			if (old_dest_mode != e->fields.dest_mode ||
 			    old_dest_id != e->fields.dest_id) {
 				/*
@@ -398,10 +399,10 @@ static void ioapic_write_indirect(struct kvm_ioapic *ioapic, u32 val)
 				    kvm_lapic_irq_dest_mode(
 					!!e->fields.dest_mode);
 				kvm_bitmap_or_dest_vcpus(ioapic->kvm, &irq,
-							 vcpu_bitmap);
+							 &vcpu_bitmap);
 			}
 			kvm_make_scan_ioapic_request_mask(ioapic->kvm,
-							  vcpu_bitmap);
+							  &vcpu_bitmap);
 		} else {
 			kvm_make_scan_ioapic_request(ioapic->kvm);
 		}
@@ -592,7 +593,7 @@ static int ioapic_mmio_read(struct kvm_vcpu *vcpu, struct kvm_io_device *this,
 		break;
 
 	case IOAPIC_REG_WINDOW:
-		result = ioapic_read_indirect(ioapic);
+		result = ioapic_read_indirect(ioapic, addr, len);
 		break;
 
 	default:

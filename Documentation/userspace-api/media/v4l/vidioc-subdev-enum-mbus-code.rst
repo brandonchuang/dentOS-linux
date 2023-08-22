@@ -48,7 +48,7 @@ information about the try formats.
 
 .. c:type:: v4l2_subdev_mbus_code_enum
 
-.. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{8.5cm}|
+.. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{8.7cm}|
 
 .. flat-table:: struct v4l2_subdev_mbus_code_enum
     :header-rows:  0
@@ -73,20 +73,13 @@ information about the try formats.
       - ``flags``
       - See :ref:`v4l2-subdev-mbus-code-flags`
     * - __u32
-      - ``stream``
-      - Stream identifier.
-    * - __u32
-      - ``reserved``\ [6]
+      - ``reserved``\ [7]
       - Reserved for future extensions. Applications and drivers must set
 	the array to zero.
 
 
 
-.. raw:: latex
-
-   \footnotesize
-
-.. tabularcolumns:: |p{8.8cm}|p{2.2cm}|p{6.3cm}|
+.. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{7.7cm}|
 
 .. _v4l2-subdev-mbus-code-flags:
 
@@ -130,10 +123,6 @@ information about the try formats.
 	the subdevice when calling the :ref:`VIDIOC_SUBDEV_S_FMT <VIDIOC_SUBDEV_G_FMT>`
 	ioctl with :ref:`V4L2_MBUS_FRAMEFMT_SET_CSC <mbus-framefmt-set-csc>` set.
 	See :ref:`v4l2-mbus-format` on how to do this.
-
-.. raw:: latex
-
-   \normalsize
 
 Return Value
 ============

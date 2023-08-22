@@ -22,8 +22,6 @@
 #include "lkc.h"
 #include "lxdialog/dialog.h"
 
-#define JUMP_NB			9
-
 static const char mconf_readme[] =
 "Overview\n"
 "--------\n"
@@ -161,12 +159,6 @@ static const char mconf_readme[] =
 "(especially with a larger number of unrolled categories) than the\n"
 "default mode.\n"
 "\n"
-
-"Search\n"
-"-------\n"
-"Pressing the forward-slash (/) anywhere brings up a search dialog box.\n"
-"\n"
-
 "Different color themes available\n"
 "--------------------------------\n"
 "It is possible to select different color themes using the variable\n"
@@ -305,12 +297,17 @@ static char filename[PATH_MAX+1];
 static void set_config_filename(const char *config_filename)
 {
 	static char menu_backtitle[PATH_MAX+128];
+	int size;
 
-	snprintf(menu_backtitle, sizeof(menu_backtitle), "%s - %s",
-		 config_filename, rootmenu.prompt->text);
+	size = snprintf(menu_backtitle, sizeof(menu_backtitle),
+			"%s - %s", config_filename, rootmenu.prompt->text);
+	if (size >= sizeof(menu_backtitle))
+		menu_backtitle[sizeof(menu_backtitle)-1] = '\0';
 	set_dialog_backtitle(menu_backtitle);
 
-	snprintf(filename, sizeof(filename), "%s", config_filename);
+	size = snprintf(filename, sizeof(filename), "%s", config_filename);
+	if (size >= sizeof(filename))
+		filename[sizeof(filename)-1] = '\0';
 }
 
 struct subtitle_part {
@@ -446,8 +443,9 @@ again:
 
 		res = get_relations_str(sym_arr, &head);
 		set_subtitle();
-		dres = show_textbox_ext("Search Results", str_get(&res), 0, 0,
-					keys, &vscroll, &hscroll, &update_text,
+		dres = show_textbox_ext("Search Results", (char *)
+					str_get(&res), 0, 0, keys, &vscroll,
+					&hscroll, &update_text, (void *)
 					&data);
 		again = false;
 		for (i = 0; i < JUMP_NB && keys[i]; i++)
@@ -910,7 +908,7 @@ static void conf_load(void)
 				return;
 			if (!conf_read(dialog_input_result)) {
 				set_config_filename(dialog_input_result);
-				conf_set_changed(true);
+				sym_set_change_count(1);
 				return;
 			}
 			show_textbox(NULL, "File does not exist!", 5, 38);

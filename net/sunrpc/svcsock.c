@@ -55,7 +55,6 @@
 #include <linux/sunrpc/stats.h>
 #include <linux/sunrpc/xprt.h>
 
-#include <trace/events/sock.h>
 #include <trace/events/sunrpc.h>
 
 #include "socklib.h"
@@ -118,6 +117,15 @@ static void svc_reclassify_socket(struct socket *sock)
  */
 static void svc_tcp_release_rqst(struct svc_rqst *rqstp)
 {
+	struct sk_buff *skb = rqstp->rq_xprt_ctxt;
+
+	if (skb) {
+		struct svc_sock *svsk =
+			container_of(rqstp->rq_xprt, struct svc_sock, sk_xprt);
+
+		rqstp->rq_xprt_ctxt = NULL;
+		skb_free_datagram_locked(svsk->sk_sk, skb);
+	}
 }
 
 /**
@@ -173,8 +181,8 @@ static void svc_set_cmsg_data(struct svc_rqst *rqstp, struct cmsghdr *cmh)
 	}
 }
 
-static int svc_sock_result_payload(struct svc_rqst *rqstp, unsigned int offset,
-				   unsigned int length)
+static int svc_sock_read_payload(struct svc_rqst *rqstp, unsigned int offset,
+				 unsigned int length)
 {
 	return 0;
 }
@@ -251,14 +259,19 @@ static ssize_t svc_tcp_read_msg(struct svc_rqst *rqstp, size_t buflen,
 	ssize_t len;
 	size_t t;
 
+	rqstp->rq_xprt_hlen = 0;
+
 	clear_bit(XPT_DATA, &svsk->sk_xprt.xpt_flags);
 
-	for (i = 0, t = 0; t < buflen; i++, t += PAGE_SIZE)
-		bvec_set_page(&bvec[i], rqstp->rq_pages[i], PAGE_SIZE, 0);
+	for (i = 0, t = 0; t < buflen; i++, t += PAGE_SIZE) {
+		bvec[i].bv_page = rqstp->rq_pages[i];
+		bvec[i].bv_len = PAGE_SIZE;
+		bvec[i].bv_offset = 0;
+	}
 	rqstp->rq_respages = &rqstp->rq_pages[i];
 	rqstp->rq_next_page = rqstp->rq_respages + 1;
 
-	iov_iter_bvec(&msg.msg_iter, ITER_DEST, bvec, i, buflen);
+	iov_iter_bvec(&msg.msg_iter, READ, bvec, i, buflen);
 	if (seek) {
 		iov_iter_advance(&msg.msg_iter, seek);
 		buflen -= seek;
@@ -307,8 +320,6 @@ static void svc_sock_secure_port(struct svc_rqst *rqstp)
 static void svc_data_ready(struct sock *sk)
 {
 	struct svc_sock	*svsk = (struct svc_sock *)sk->sk_user_data;
-
-	trace_sk_data_ready(sk);
 
 	if (svsk) {
 		/* Refer to svc_setup_socket() for details. */
@@ -453,7 +464,7 @@ static int svc_udp_recvfrom(struct svc_rqst *rqstp)
 			     0, 0, MSG_PEEK | MSG_DONTWAIT);
 	if (err < 0)
 		goto out_recv_err;
-	skb = skb_recv_udp(svsk->sk_sk, MSG_DONTWAIT, &err);
+	skb = skb_recv_udp(svsk->sk_sk, 0, 1, &err);
 	if (!skb)
 		goto out_recv_err;
 
@@ -508,8 +519,6 @@ static int svc_udp_recvfrom(struct svc_rqst *rqstp)
 	if (serv->sv_stats)
 		serv->sv_stats->netudpcnt++;
 
-	svc_sock_secure_port(rqstp);
-	svc_xprt_received(rqstp->rq_xprt);
 	return len;
 
 out_recv_err:
@@ -518,7 +527,7 @@ out_recv_err:
 		set_bit(XPT_DATA, &svsk->sk_xprt.xpt_flags);
 	}
 	trace_svcsock_udp_recv_err(&svsk->sk_xprt, err);
-	goto out_clear_busy;
+	return 0;
 out_cmsg_err:
 	net_warn_ratelimited("svc: received unknown control message %d/%d; dropping RPC reply datagram\n",
 			     cmh->cmsg_level, cmh->cmsg_type);
@@ -527,8 +536,6 @@ out_bh_enable:
 	local_bh_enable();
 out_free:
 	kfree_skb(skb);
-out_clear_busy:
-	svc_xprt_received(rqstp->rq_xprt);
 	return 0;
 }
 
@@ -569,18 +576,15 @@ static int svc_udp_sendto(struct svc_rqst *rqstp)
 	if (svc_xprt_is_dead(xprt))
 		goto out_notconn;
 
-	err = xdr_alloc_bvec(xdr, GFP_KERNEL);
-	if (err < 0)
-		goto out_unlock;
-
 	err = xprt_sock_sendmsg(svsk->sk_sock, &msg, xdr, 0, 0, &sent);
+	xdr_free_bvec(xdr);
 	if (err == -ECONNREFUSED) {
 		/* ICMP error on earlier request. */
 		err = xprt_sock_sendmsg(svsk->sk_sock, &msg, xdr, 0, 0, &sent);
+		xdr_free_bvec(xdr);
 	}
-	xdr_free_bvec(xdr);
 	trace_svcsock_udp_send(xprt, err);
-out_unlock:
+
 	mutex_unlock(&xprt->xpt_mutex);
 	if (err < 0)
 		return err;
@@ -631,12 +635,13 @@ static const struct svc_xprt_ops svc_udp_ops = {
 	.xpo_create = svc_udp_create,
 	.xpo_recvfrom = svc_udp_recvfrom,
 	.xpo_sendto = svc_udp_sendto,
-	.xpo_result_payload = svc_sock_result_payload,
+	.xpo_read_payload = svc_sock_read_payload,
 	.xpo_release_rqst = svc_udp_release_rqst,
 	.xpo_detach = svc_sock_detach,
 	.xpo_free = svc_sock_free,
 	.xpo_has_wspace = svc_udp_has_wspace,
 	.xpo_accept = svc_udp_accept,
+	.xpo_secure_port = svc_sock_secure_port,
 	.xpo_kill_temp_xprt = svc_udp_kill_temp_xprt,
 };
 
@@ -687,8 +692,6 @@ static void svc_tcp_listen_data_ready(struct sock *sk)
 {
 	struct svc_sock	*svsk = (struct svc_sock *)sk->sk_user_data;
 
-	trace_sk_data_ready(sk);
-
 	if (svsk) {
 		/* Refer to svc_setup_socket() for details. */
 		rmb();
@@ -725,8 +728,10 @@ static void svc_tcp_state_change(struct sock *sk)
 		rmb();
 		svsk->sk_ostate(sk);
 		trace_svcsock_tcp_state(&svsk->sk_xprt, svsk->sk_sock);
-		if (sk->sk_state != TCP_ESTABLISHED)
-			svc_xprt_deferred_close(&svsk->sk_xprt);
+		if (sk->sk_state != TCP_ESTABLISHED) {
+			set_bit(XPT_CLOSE, &svsk->sk_xprt.xpt_flags);
+			svc_xprt_enqueue(&svsk->sk_xprt);
+		}
 	}
 }
 
@@ -876,7 +881,7 @@ static ssize_t svc_tcp_read_marker(struct svc_sock *svsk,
 		want = sizeof(rpc_fraghdr) - svsk->sk_tcplen;
 		iov.iov_base = ((char *)&svsk->sk_marker) + svsk->sk_tcplen;
 		iov.iov_len  = want;
-		iov_iter_kvec(&msg.msg_iter, ITER_DEST, &iov, 1, want);
+		iov_iter_kvec(&msg.msg_iter, READ, &iov, 1, want);
 		len = sock_recvmsg(svsk->sk_sock, &msg, MSG_DONTWAIT);
 		if (len < 0)
 			return len;
@@ -896,7 +901,7 @@ err_too_large:
 	net_notice_ratelimited("svc: %s %s RPC fragment too large: %d\n",
 			       __func__, svsk->sk_xprt.xpt_server->sv_name,
 			       svc_sock_reclen(svsk));
-	svc_xprt_deferred_close(&svsk->sk_xprt);
+	set_bit(XPT_CLOSE, &svsk->sk_xprt.xpt_flags);
 err_short:
 	return -EAGAIN;
 }
@@ -1030,8 +1035,6 @@ static int svc_tcp_recvfrom(struct svc_rqst *rqstp)
 	if (serv->sv_stats)
 		serv->sv_stats->nettcpcnt++;
 
-	svc_sock_secure_port(rqstp);
-	svc_xprt_received(rqstp->rq_xprt);
 	return rqstp->rq_arg.len;
 
 err_incomplete:
@@ -1049,14 +1052,13 @@ error:
 	if (len != -EAGAIN)
 		goto err_delete;
 	trace_svcsock_tcp_recv_eagain(&svsk->sk_xprt, 0);
-	goto err_noclose;
+	return 0;
 err_nuts:
 	svsk->sk_datalen = 0;
 err_delete:
 	trace_svcsock_tcp_recv_err(&svsk->sk_xprt, len);
-	svc_xprt_deferred_close(&svsk->sk_xprt);
+	set_bit(XPT_CLOSE, &svsk->sk_xprt.xpt_flags);
 err_noclose:
-	svc_xprt_received(rqstp->rq_xprt);
 	return 0;	/* record not complete */
 }
 
@@ -1076,8 +1078,9 @@ static int svc_tcp_send_kvec(struct socket *sock, const struct kvec *vec,
  * In addition, the logic assumes that * .bv_len is never larger
  * than PAGE_SIZE.
  */
-static int svc_tcp_sendmsg(struct socket *sock, struct xdr_buf *xdr,
-			   rpc_fraghdr marker, unsigned int *sentp)
+static int svc_tcp_sendmsg(struct socket *sock, struct msghdr *msg,
+			   struct xdr_buf *xdr, rpc_fraghdr marker,
+			   unsigned int *sentp)
 {
 	const struct kvec *head = xdr->head;
 	const struct kvec *tail = xdr->tail;
@@ -1085,24 +1088,21 @@ static int svc_tcp_sendmsg(struct socket *sock, struct xdr_buf *xdr,
 		.iov_base	= &marker,
 		.iov_len	= sizeof(marker),
 	};
-	struct msghdr msg = {
-		.msg_flags	= 0,
-	};
-	int ret;
+	int flags, ret;
 
 	*sentp = 0;
-	ret = xdr_alloc_bvec(xdr, GFP_KERNEL);
-	if (ret < 0)
-		return ret;
+	xdr_alloc_bvec(xdr, GFP_KERNEL);
 
-	ret = kernel_sendmsg(sock, &msg, &rm, 1, rm.iov_len);
+	msg->msg_flags = MSG_MORE;
+	ret = kernel_sendmsg(sock, msg, &rm, 1, rm.iov_len);
 	if (ret < 0)
 		return ret;
 	*sentp += ret;
 	if (ret != rm.iov_len)
 		return -EAGAIN;
 
-	ret = svc_tcp_send_kvec(sock, head, 0);
+	flags = head->iov_len < xdr->len ? MSG_MORE | MSG_SENDPAGE_NOTLAST : 0;
+	ret = svc_tcp_send_kvec(sock, head, flags);
 	if (ret < 0)
 		return ret;
 	*sentp += ret;
@@ -1116,11 +1116,15 @@ static int svc_tcp_sendmsg(struct socket *sock, struct xdr_buf *xdr,
 		bvec = xdr->bvec + (xdr->page_base >> PAGE_SHIFT);
 		offset = offset_in_page(xdr->page_base);
 		remaining = xdr->page_len;
+		flags = MSG_MORE | MSG_SENDPAGE_NOTLAST;
 		while (remaining > 0) {
+			if (remaining <= PAGE_SIZE && tail->iov_len == 0)
+				flags = 0;
+
 			len = min(remaining, bvec->bv_len - offset);
 			ret = kernel_sendpage(sock, bvec->bv_page,
 					      bvec->bv_offset + offset,
-					      len, 0);
+					      len, flags);
 			if (ret < 0)
 				return ret;
 			*sentp += ret;
@@ -1159,28 +1163,26 @@ static int svc_tcp_sendto(struct svc_rqst *rqstp)
 	struct xdr_buf *xdr = &rqstp->rq_res;
 	rpc_fraghdr marker = cpu_to_be32(RPC_LAST_STREAM_FRAGMENT |
 					 (u32)xdr->len);
+	struct msghdr msg = {
+		.msg_flags	= 0,
+	};
 	unsigned int sent;
 	int err;
 
 	svc_tcp_release_rqst(rqstp);
 
-	atomic_inc(&svsk->sk_sendqlen);
 	mutex_lock(&xprt->xpt_mutex);
 	if (svc_xprt_is_dead(xprt))
 		goto out_notconn;
-	tcp_sock_set_cork(svsk->sk_sk, true);
-	err = svc_tcp_sendmsg(svsk->sk_sock, xdr, marker, &sent);
+	err = svc_tcp_sendmsg(svsk->sk_sock, &msg, xdr, marker, &sent);
 	xdr_free_bvec(xdr);
-	trace_svcsock_tcp_send(xprt, err < 0 ? (long)err : sent);
+	trace_svcsock_tcp_send(xprt, err < 0 ? err : sent);
 	if (err < 0 || sent != (xdr->len + sizeof(marker)))
 		goto out_close;
-	if (atomic_dec_and_test(&svsk->sk_sendqlen))
-		tcp_sock_set_cork(svsk->sk_sk, false);
 	mutex_unlock(&xprt->xpt_mutex);
 	return sent;
 
 out_notconn:
-	atomic_dec(&svsk->sk_sendqlen);
 	mutex_unlock(&xprt->xpt_mutex);
 	return -ENOTCONN;
 out_close:
@@ -1188,8 +1190,8 @@ out_close:
 		  xprt->xpt_server->sv_name,
 		  (err < 0) ? "got error" : "sent",
 		  (err < 0) ? err : sent, xdr->len);
-	svc_xprt_deferred_close(xprt);
-	atomic_dec(&svsk->sk_sendqlen);
+	set_bit(XPT_CLOSE, &xprt->xpt_flags);
+	svc_xprt_enqueue(xprt);
 	mutex_unlock(&xprt->xpt_mutex);
 	return -EAGAIN;
 }
@@ -1206,12 +1208,13 @@ static const struct svc_xprt_ops svc_tcp_ops = {
 	.xpo_create = svc_tcp_create,
 	.xpo_recvfrom = svc_tcp_recvfrom,
 	.xpo_sendto = svc_tcp_sendto,
-	.xpo_result_payload = svc_sock_result_payload,
+	.xpo_read_payload = svc_sock_read_payload,
 	.xpo_release_rqst = svc_tcp_release_rqst,
 	.xpo_detach = svc_tcp_sock_detach,
 	.xpo_free = svc_sock_free,
 	.xpo_has_wspace = svc_tcp_has_wspace,
 	.xpo_accept = svc_tcp_accept,
+	.xpo_secure_port = svc_sock_secure_port,
 	.xpo_kill_temp_xprt = svc_tcp_kill_temp_xprt,
 };
 
@@ -1258,7 +1261,7 @@ static void svc_tcp_init(struct svc_sock *svsk, struct svc_serv *serv)
 		svsk->sk_datalen = 0;
 		memset(&svsk->sk_pages[0], 0, sizeof(svsk->sk_pages));
 
-		tcp_sock_set_nodelay(sk);
+		tcp_sk(sk)->nonagle |= TCP_NAGLE_OFF;
 
 		set_bit(XPT_DATA, &svsk->sk_xprt.xpt_flags);
 		switch (sk->sk_state) {
@@ -1266,7 +1269,7 @@ static void svc_tcp_init(struct svc_sock *svsk, struct svc_serv *serv)
 		case TCP_ESTABLISHED:
 			break;
 		default:
-			svc_xprt_deferred_close(&svsk->sk_xprt);
+			set_bit(XPT_CLOSE, &svsk->sk_xprt.xpt_flags);
 		}
 	}
 }

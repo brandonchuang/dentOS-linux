@@ -10,7 +10,6 @@
  */
 
 #include <crypto/internal/aead.h>
-#include <crypto/internal/cipher.h>
 #include <crypto/internal/skcipher.h>
 #include <crypto/scatterwalk.h>
 #include <linux/bug.h>
@@ -42,24 +41,38 @@ struct skcipher_walk_buffer {
 
 static int skcipher_walk_next(struct skcipher_walk *walk);
 
+static inline void skcipher_unmap(struct scatter_walk *walk, void *vaddr)
+{
+	if (PageHighMem(scatterwalk_page(walk)))
+		kunmap_atomic(vaddr);
+}
+
+static inline void *skcipher_map(struct scatter_walk *walk)
+{
+	struct page *page = scatterwalk_page(walk);
+
+	return (PageHighMem(page) ? kmap_atomic(page) : page_address(page)) +
+	       offset_in_page(walk->offset);
+}
+
 static inline void skcipher_map_src(struct skcipher_walk *walk)
 {
-	walk->src.virt.addr = scatterwalk_map(&walk->in);
+	walk->src.virt.addr = skcipher_map(&walk->in);
 }
 
 static inline void skcipher_map_dst(struct skcipher_walk *walk)
 {
-	walk->dst.virt.addr = scatterwalk_map(&walk->out);
+	walk->dst.virt.addr = skcipher_map(&walk->out);
 }
 
 static inline void skcipher_unmap_src(struct skcipher_walk *walk)
 {
-	scatterwalk_unmap(walk->src.virt.addr);
+	skcipher_unmap(&walk->in, walk->src.virt.addr);
 }
 
 static inline void skcipher_unmap_dst(struct skcipher_walk *walk)
 {
-	scatterwalk_unmap(walk->dst.virt.addr);
+	skcipher_unmap(&walk->out, walk->dst.virt.addr);
 }
 
 static inline gfp_t skcipher_walk_gfp(struct skcipher_walk *walk)
@@ -417,7 +430,7 @@ static int skcipher_copy_iv(struct skcipher_walk *walk)
 
 static int skcipher_walk_first(struct skcipher_walk *walk)
 {
-	if (WARN_ON_ONCE(in_hardirq()))
+	if (WARN_ON_ONCE(in_irq()))
 		return -EDEADLK;
 
 	walk->buffer = NULL;
@@ -476,6 +489,12 @@ int skcipher_walk_virt(struct skcipher_walk *walk,
 	return err;
 }
 EXPORT_SYMBOL_GPL(skcipher_walk_virt);
+
+void skcipher_walk_atomise(struct skcipher_walk *walk)
+{
+	walk->flags &= ~SKCIPHER_WALK_SLEEP;
+}
+EXPORT_SYMBOL_GPL(skcipher_walk_atomise);
 
 int skcipher_walk_async(struct skcipher_walk *walk,
 			struct skcipher_request *req)
@@ -749,7 +768,7 @@ struct crypto_sync_skcipher *crypto_alloc_sync_skcipher(
 	struct crypto_skcipher *tfm;
 
 	/* Only sync algorithms allowed. */
-	mask |= CRYPTO_ALG_ASYNC | CRYPTO_ALG_SKCIPHER_REQSIZE_LARGE;
+	mask |= CRYPTO_ALG_ASYNC;
 
 	tfm = crypto_alloc_tfm(alg_name, &crypto_skcipher_type, type, mask);
 
@@ -967,4 +986,3 @@ EXPORT_SYMBOL_GPL(skcipher_alloc_instance_simple);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Symmetric key cipher type");
-MODULE_IMPORT_NS(CRYPTO_INTERNAL);

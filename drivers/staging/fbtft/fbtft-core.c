@@ -38,7 +38,8 @@ int fbtft_write_buf_dc(struct fbtft_par *par, void *buf, size_t len, int dc)
 {
 	int ret;
 
-	gpiod_set_value(par->gpio.dc, dc);
+	if (par->gpio.dc)
+		gpiod_set_value(par->gpio.dc, dc);
 
 	ret = par->fbtftops.write(par, buf, len);
 	if (ret < 0)
@@ -49,7 +50,7 @@ int fbtft_write_buf_dc(struct fbtft_par *par, void *buf, size_t len, int dc)
 EXPORT_SYMBOL(fbtft_write_buf_dc);
 
 void fbtft_dbg_hex(const struct device *dev, int groupsize,
-		   const void *buf, size_t len, const char *fmt, ...)
+		   void *buf, size_t len, const char *fmt, ...)
 {
 	va_list args;
 	static char textbuf[512];
@@ -75,16 +76,20 @@ static int fbtft_request_one_gpio(struct fbtft_par *par,
 				  struct gpio_desc **gpiop)
 {
 	struct device *dev = par->info->device;
+	int ret = 0;
 
 	*gpiop = devm_gpiod_get_index_optional(dev, name, index,
-					       GPIOD_OUT_LOW);
-	if (IS_ERR(*gpiop))
-		return dev_err_probe(dev, PTR_ERR(*gpiop), "Failed to request %s GPIO\n", name);
-
+					       GPIOD_OUT_HIGH);
+	if (IS_ERR(*gpiop)) {
+		ret = PTR_ERR(*gpiop);
+		dev_err(dev,
+			"Failed to request %s GPIO: %d\n", name, ret);
+		return ret;
+	}
 	fbtft_par_dbg(DEBUG_REQUEST_GPIOS, par, "%s: '%s' GPIO\n",
 		      __func__, name);
 
-	return 0;
+	return ret;
 }
 
 static int fbtft_request_gpios(struct fbtft_par *par)
@@ -128,6 +133,7 @@ static int fbtft_request_gpios(struct fbtft_par *par)
 	return 0;
 }
 
+#ifdef CONFIG_FB_BACKLIGHT
 static int fbtft_backlight_update_status(struct backlight_device *bd)
 {
 	struct fbtft_par *par = bl_get_data(bd);
@@ -137,7 +143,8 @@ static int fbtft_backlight_update_status(struct backlight_device *bd)
 		      "%s: polarity=%d, power=%d, fb_blank=%d\n",
 		      __func__, polarity, bd->props.power, bd->props.fb_blank);
 
-	if (!backlight_is_blank(bd))
+	if ((bd->props.power == FB_BLANK_UNBLANK) &&
+	    (bd->props.fb_blank == FB_BLANK_UNBLANK))
 		gpiod_set_value(par->gpio.led[0], polarity);
 	else
 		gpiod_set_value(par->gpio.led[0], !polarity);
@@ -159,7 +166,6 @@ void fbtft_unregister_backlight(struct fbtft_par *par)
 		par->info->bl_dev = NULL;
 	}
 }
-EXPORT_SYMBOL(fbtft_unregister_backlight);
 
 static const struct backlight_ops fbtft_bl_ops = {
 	.get_brightness	= fbtft_backlight_get_brightness,
@@ -197,7 +203,12 @@ void fbtft_register_backlight(struct fbtft_par *par)
 	if (!par->fbtftops.unregister_backlight)
 		par->fbtftops.unregister_backlight = fbtft_unregister_backlight;
 }
+#else
+void fbtft_register_backlight(struct fbtft_par *par) { };
+void fbtft_unregister_backlight(struct fbtft_par *par) { };
+#endif
 EXPORT_SYMBOL(fbtft_register_backlight);
+EXPORT_SYMBOL(fbtft_unregister_backlight);
 
 static void fbtft_set_addr_win(struct fbtft_par *par, int xs, int ys, int xe,
 			       int ye)
@@ -215,15 +226,11 @@ static void fbtft_reset(struct fbtft_par *par)
 {
 	if (!par->gpio.reset)
 		return;
-
 	fbtft_par_dbg(DEBUG_RESET, par, "%s()\n", __func__);
-
 	gpiod_set_value_cansleep(par->gpio.reset, 1);
 	usleep_range(20, 40);
 	gpiod_set_value_cansleep(par->gpio.reset, 0);
 	msleep(120);
-
-	gpiod_set_value_cansleep(par->gpio.cs, 1);  /* Activate chip */
 }
 
 static void fbtft_update_display(struct fbtft_par *par, unsigned int start_line,
@@ -321,11 +328,12 @@ static void fbtft_mkdirty(struct fb_info *info, int y, int height)
 	schedule_delayed_work(&info->deferred_work, fbdefio->delay);
 }
 
-static void fbtft_deferred_io(struct fb_info *info, struct list_head *pagereflist)
+static void fbtft_deferred_io(struct fb_info *info, struct list_head *pagelist)
 {
 	struct fbtft_par *par = info->par;
 	unsigned int dirty_lines_start, dirty_lines_end;
-	struct fb_deferred_io_pageref *pageref;
+	struct page *page;
+	unsigned long index;
 	unsigned int y_low = 0, y_high = 0;
 	int count = 0;
 
@@ -338,13 +346,14 @@ static void fbtft_deferred_io(struct fb_info *info, struct list_head *pagereflis
 	spin_unlock(&par->dirty_lock);
 
 	/* Mark display lines as dirty */
-	list_for_each_entry(pageref, pagereflist, list) {
+	list_for_each_entry(page, pagelist, lru) {
 		count++;
-		y_low = pageref->offset / info->fix.line_length;
-		y_high = (pageref->offset + PAGE_SIZE - 1) / info->fix.line_length;
+		index = page->index << PAGE_SHIFT;
+		y_low = index / info->fix.line_length;
+		y_high = (index + PAGE_SIZE - 1) / info->fix.line_length;
 		dev_dbg(info->device,
 			"page->index=%lu y_low=%d y_high=%d\n",
-			pageref->page->index, y_low, y_high);
+			page->index, y_low, y_high);
 		if (y_high > info->var.yres - 1)
 			y_high = info->var.yres - 1;
 		if (y_low < dirty_lines_start)
@@ -649,11 +658,10 @@ struct fb_info *fbtft_framebuffer_alloc(struct fbtft_display *display,
 	fbops->fb_imageblit =      fbtft_fb_imageblit;
 	fbops->fb_setcolreg =      fbtft_fb_setcolreg;
 	fbops->fb_blank     =      fbtft_fb_blank;
-	fbops->fb_mmap      =      fb_deferred_io_mmap;
 
-	fbdefio->delay =            HZ / fps;
-	fbdefio->sort_pagereflist = true;
-	fbdefio->deferred_io =      fbtft_deferred_io;
+	fbdefio->delay =           HZ / fps;
+	fbdefio->deferred_io =     fbtft_deferred_io;
+	fb_deferred_io_init(info);
 
 	snprintf(info->fix.id, sizeof(info->fix.id), "%s", dev->driver->name);
 	info->fix.type =           FB_TYPE_PACKED_PIXELS;
@@ -664,7 +672,6 @@ struct fb_info *fbtft_framebuffer_alloc(struct fbtft_display *display,
 	info->fix.line_length =    width * bpp / 8;
 	info->fix.accel =          FB_ACCEL_NONE;
 	info->fix.smem_len =       vmem_size;
-	fb_deferred_io_init(info);
 
 	info->var.rotate =         pdata->rotate;
 	info->var.xres =           width;
@@ -847,11 +854,13 @@ int fbtft_register_framebuffer(struct fb_info *fb_info)
 		 fb_info->fix.smem_len >> 10, text1,
 		 HZ / fb_info->fbdefio->delay, text2);
 
+#ifdef CONFIG_FB_BACKLIGHT
 	/* Turn on backlight if available */
 	if (fb_info->bl_dev) {
 		fb_info->bl_dev->props.power = FB_BLANK_UNBLANK;
 		fb_info->bl_dev->ops->update_status(fb_info->bl_dev);
 	}
+#endif
 
 	return 0;
 
@@ -913,6 +922,8 @@ static int fbtft_init_display_from_property(struct fbtft_par *par)
 		goto out_free;
 
 	par->fbtftops.reset(par);
+	if (par->gpio.cs)
+		gpiod_set_value(par->gpio.cs, 0);  /* Activate chip */
 
 	index = -1;
 	val = values[++index];
@@ -984,7 +995,9 @@ out_free:
 int fbtft_init_display(struct fbtft_par *par)
 {
 	int buf[64];
-	int i;
+	char msg[128];
+	char str[16];
+	int i = 0;
 	int j;
 
 	/* sanity check */
@@ -995,11 +1008,9 @@ int fbtft_init_display(struct fbtft_par *par)
 	}
 
 	/* make sure stop marker exists */
-	for (i = 0; i < FBTFT_MAX_INIT_SEQUENCE; i++) {
+	for (i = 0; i < FBTFT_MAX_INIT_SEQUENCE; i++)
 		if (par->init_sequence[i] == -3)
 			break;
-	}
-
 	if (i == FBTFT_MAX_INIT_SEQUENCE) {
 		dev_err(par->info->device,
 			"missing stop marker at end of init sequence\n");
@@ -1007,6 +1018,8 @@ int fbtft_init_display(struct fbtft_par *par)
 	}
 
 	par->fbtftops.reset(par);
+	if (par->gpio.cs)
+		gpiod_set_value(par->gpio.cs, 0);  /* Activate chip */
 
 	i = 0;
 	while (i < FBTFT_MAX_INIT_SEQUENCE) {
@@ -1028,14 +1041,17 @@ int fbtft_init_display(struct fbtft_par *par)
 		switch (par->init_sequence[i]) {
 		case -1:
 			i++;
-
 			/* make debug message */
-			for (j = 0; par->init_sequence[i + 1 + j] >= 0; j++)
-				;
-
-			fbtft_par_dbg_hex(DEBUG_INIT_DISPLAY, par, par->info->device,
-					  s16, &par->init_sequence[i + 1], j,
-					  "init: write(0x%02X)", par->init_sequence[i]);
+			strcpy(msg, "");
+			j = i + 1;
+			while (par->init_sequence[j] >= 0) {
+				sprintf(str, "0x%02X ", par->init_sequence[j]);
+				strcat(msg, str);
+				j++;
+			}
+			fbtft_par_dbg(DEBUG_INIT_DISPLAY, par,
+				      "init: write(0x%02X) %s\n",
+				      par->init_sequence[i], msg);
 
 			/* Write */
 			j = 0;
@@ -1310,17 +1326,23 @@ EXPORT_SYMBOL(fbtft_probe_common);
  * @info: Framebuffer
  *
  * Unregisters and releases the framebuffer
+ *
+ * Return: 0 if successful, negative if error
  */
-void fbtft_remove_common(struct device *dev, struct fb_info *info)
+int fbtft_remove_common(struct device *dev, struct fb_info *info)
 {
 	struct fbtft_par *par;
 
+	if (!info)
+		return -EINVAL;
 	par = info->par;
 	if (par)
 		fbtft_par_dbg(DEBUG_DRIVER_INIT_FUNCTIONS, par,
 			      "%s()\n", __func__);
 	fbtft_unregister_framebuffer(info);
 	fbtft_framebuffer_release(info);
+
+	return 0;
 }
 EXPORT_SYMBOL(fbtft_remove_common);
 

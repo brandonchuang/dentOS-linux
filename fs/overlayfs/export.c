@@ -211,8 +211,7 @@ static int ovl_check_encode_origin(struct dentry *dentry)
 	return 1;
 }
 
-static int ovl_dentry_to_fid(struct ovl_fs *ofs, struct dentry *dentry,
-			     u32 *fid, int buflen)
+static int ovl_dentry_to_fid(struct dentry *dentry, u32 *fid, int buflen)
 {
 	struct ovl_fh *fh = NULL;
 	int err, enc_lower;
@@ -227,7 +226,7 @@ static int ovl_dentry_to_fid(struct ovl_fs *ofs, struct dentry *dentry,
 		goto fail;
 
 	/* Encode an upper or lower file handle */
-	fh = ovl_encode_real_fh(ofs, enc_lower ? ovl_dentry_lower(dentry) :
+	fh = ovl_encode_real_fh(enc_lower ? ovl_dentry_lower(dentry) :
 				ovl_dentry_upper(dentry), !enc_lower);
 	if (IS_ERR(fh))
 		return PTR_ERR(fh);
@@ -250,7 +249,6 @@ fail:
 static int ovl_encode_fh(struct inode *inode, u32 *fid, int *max_len,
 			 struct inode *parent)
 {
-	struct ovl_fs *ofs = OVL_FS(inode->i_sb);
 	struct dentry *dentry;
 	int bytes, buflen = *max_len << 2;
 
@@ -259,10 +257,10 @@ static int ovl_encode_fh(struct inode *inode, u32 *fid, int *max_len,
 		return FILEID_INVALID;
 
 	dentry = d_find_any_alias(inode);
-	if (!dentry)
+	if (WARN_ON(!dentry))
 		return FILEID_INVALID;
 
-	bytes = ovl_dentry_to_fid(ofs, dentry, fid, buflen);
+	bytes = ovl_dentry_to_fid(dentry, fid, buflen);
 	dput(dentry);
 	if (bytes <= 0)
 		return FILEID_INVALID;
@@ -339,7 +337,7 @@ out_iput:
 	return dentry;
 }
 
-/* Get the upper or lower dentry in stack whose on layer @idx */
+/* Get the upper or lower dentry in stach whose on layer @idx */
 static struct dentry *ovl_dentry_real_at(struct dentry *dentry, int idx)
 {
 	struct ovl_entry *oe = dentry->d_fsdata;
@@ -391,13 +389,7 @@ static struct dentry *ovl_lookup_real_one(struct dentry *connected,
 	 * pointer because we hold no lock on the real dentry.
 	 */
 	take_dentry_name_snapshot(&name, real);
-	/*
-	 * No idmap handling here: it's an internal lookup.  Could skip
-	 * permission checking altogether, but for now just use non-idmap
-	 * transformed ids.
-	 */
 	this = lookup_one_len(name.name.name, connected, name.name.len);
-	release_dentry_name_snapshot(&name);
 	err = PTR_ERR(this);
 	if (IS_ERR(this)) {
 		goto fail;
@@ -412,6 +404,7 @@ static struct dentry *ovl_lookup_real_one(struct dentry *connected,
 	}
 
 out:
+	release_dentry_name_snapshot(&name);
 	dput(parent);
 	inode_unlock(dir);
 	return this;
@@ -463,7 +456,7 @@ static struct dentry *ovl_lookup_real_inode(struct super_block *sb,
 
 	/* Get connected upper overlay dir from index */
 	if (index) {
-		struct dentry *upper = ovl_index_upper(ofs, index, true);
+		struct dentry *upper = ovl_index_upper(ofs, index);
 
 		dput(index);
 		if (IS_ERR_OR_NULL(upper))
@@ -687,7 +680,7 @@ static struct dentry *ovl_upper_fh_to_d(struct super_block *sb,
 	if (!ovl_upper_mnt(ofs))
 		return ERR_PTR(-EACCES);
 
-	upper = ovl_decode_real_fh(ofs, fh, ovl_upper_mnt(ofs), true);
+	upper = ovl_decode_real_fh(fh, ovl_upper_mnt(ofs), true);
 	if (IS_ERR_OR_NULL(upper))
 		return upper;
 
@@ -739,7 +732,7 @@ static struct dentry *ovl_lower_fh_to_d(struct super_block *sb,
 
 	/* Then try to get a connected upper dir by index */
 	if (index && d_is_dir(index)) {
-		struct dentry *upper = ovl_index_upper(ofs, index, true);
+		struct dentry *upper = ovl_index_upper(ofs, index);
 
 		err = PTR_ERR(upper);
 		if (IS_ERR_OR_NULL(upper))
@@ -796,7 +789,7 @@ static struct ovl_fh *ovl_fid_to_fh(struct fid *fid, int buflen, int fh_type)
 		return ERR_PTR(-ENOMEM);
 
 	/* Copy unaligned inner fh into aligned buffer */
-	memcpy(fh->buf, fid, buflen - OVL_FH_WIRE_OFFSET);
+	memcpy(&fh->fb, fid, buflen - OVL_FH_WIRE_OFFSET);
 	return fh;
 }
 

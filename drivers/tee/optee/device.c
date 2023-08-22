@@ -53,13 +53,6 @@ static int get_devices(struct tee_context *ctx, u32 session,
 	return 0;
 }
 
-static void optee_release_device(struct device *dev)
-{
-	struct tee_client_device *optee_device = to_tee_client_device(dev);
-
-	kfree(optee_device);
-}
-
 static int optee_register_device(const uuid_t *device_uuid)
 {
 	struct tee_client_device *optee_device = NULL;
@@ -70,7 +63,6 @@ static int optee_register_device(const uuid_t *device_uuid)
 		return -ENOMEM;
 
 	optee_device->dev.bus = &tee_bus_type;
-	optee_device->dev.release = optee_release_device;
 	if (dev_set_name(&optee_device->dev, "optee-ta-%pUb", device_uuid)) {
 		kfree(optee_device);
 		return -ENOMEM;
@@ -80,7 +72,7 @@ static int optee_register_device(const uuid_t *device_uuid)
 	rc = device_register(&optee_device->dev);
 	if (rc) {
 		pr_err("device registration failed, err: %d\n", rc);
-		put_device(&optee_device->dev);
+		kfree(optee_device);
 	}
 
 	return rc;
@@ -106,7 +98,7 @@ static int __optee_enumerate_devices(u32 func)
 		return -ENODEV;
 
 	/* Open session with device enumeration pseudo TA */
-	export_uuid(sess_arg.uuid, &pta_uuid);
+	memcpy(sess_arg.uuid, pta_uuid.b, TEE_IOCTL_UUID_LEN);
 	sess_arg.clnt_login = TEE_IOCTL_LOGIN_PUBLIC;
 	sess_arg.num_params = 0;
 
@@ -121,9 +113,10 @@ static int __optee_enumerate_devices(u32 func)
 	if (rc < 0 || !shm_size)
 		goto out_sess;
 
-	device_shm = tee_shm_alloc_kernel_buf(ctx, shm_size);
+	device_shm = tee_shm_alloc(ctx, shm_size,
+				   TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(device_shm)) {
-		pr_err("tee_shm_alloc_kernel_buf failed\n");
+		pr_err("tee_shm_alloc failed\n");
 		rc = PTR_ERR(device_shm);
 		goto out_sess;
 	}
@@ -160,18 +153,4 @@ out_ctx:
 int optee_enumerate_devices(u32 func)
 {
 	return  __optee_enumerate_devices(func);
-}
-
-static int __optee_unregister_device(struct device *dev, void *data)
-{
-	if (!strncmp(dev_name(dev), "optee-ta", strlen("optee-ta")))
-		device_unregister(dev);
-
-	return 0;
-}
-
-void optee_unregister_devices(void)
-{
-	bus_for_each_dev(&tee_bus_type, NULL, NULL,
-			 __optee_unregister_device);
 }

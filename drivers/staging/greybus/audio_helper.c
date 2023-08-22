@@ -3,6 +3,7 @@
  * Greybus Audio Sound SoC helper APIs
  */
 
+#include <linux/debugfs.h>
 #include <sound/core.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -114,18 +115,22 @@ int gbaudio_dapm_free_controls(struct snd_soc_dapm_context *dapm,
 			       int num)
 {
 	int i;
-	struct snd_soc_dapm_widget *w, *tmp_w;
+	struct snd_soc_dapm_widget *w, *next_w;
+#ifdef CONFIG_DEBUG_FS
+	struct dentry *parent = dapm->debugfs_dapm;
+	struct dentry *debugfs_w = NULL;
+#endif
 
 	mutex_lock(&dapm->card->dapm_mutex);
 	for (i = 0; i < num; i++) {
 		/* below logic can be optimized to identify widget pointer */
-		w = NULL;
-		list_for_each_entry(tmp_w, &dapm->card->widgets, list) {
-			if (tmp_w->dapm == dapm &&
-			    !strcmp(tmp_w->name, widget->name)) {
-				w = tmp_w;
+		list_for_each_entry_safe(w, next_w, &dapm->card->widgets,
+					 list) {
+			if (w->dapm != dapm)
+				continue;
+			if (!strcmp(w->name, widget->name))
 				break;
-			}
+			w = NULL;
 		}
 		if (!w) {
 			dev_err(dapm->dev, "%s: widget not found\n",
@@ -134,6 +139,12 @@ int gbaudio_dapm_free_controls(struct snd_soc_dapm_context *dapm,
 			continue;
 		}
 		widget++;
+#ifdef CONFIG_DEBUG_FS
+		if (!parent)
+			debugfs_w = debugfs_lookup(w->name, parent);
+		debugfs_remove(debugfs_w);
+		debugfs_w = NULL;
+#endif
 		gbaudio_dapm_free_widget(w);
 	}
 	mutex_unlock(&dapm->card->dapm_mutex);
@@ -155,7 +166,7 @@ static int gbaudio_remove_controls(struct snd_card *card, struct device *dev,
 			snprintf(id.name, sizeof(id.name), "%s %s", prefix,
 				 control->name);
 		else
-			strscpy(id.name, control->name, sizeof(id.name));
+			strlcpy(id.name, control->name, sizeof(id.name));
 		id.numid = 0;
 		id.iface = control->iface;
 		id.device = control->device;
@@ -181,11 +192,7 @@ int gbaudio_remove_component_controls(struct snd_soc_component *component,
 				      unsigned int num_controls)
 {
 	struct snd_card *card = component->card->snd_card;
-	int err;
 
-	down_write(&card->controls_rwsem);
-	err = gbaudio_remove_controls(card, component->dev, controls,
-				      num_controls, component->name_prefix);
-	up_write(&card->controls_rwsem);
-	return err;
+	return gbaudio_remove_controls(card, component->dev, controls,
+				       num_controls, component->name_prefix);
 }

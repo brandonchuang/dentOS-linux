@@ -28,6 +28,7 @@
 #include <linux/string.h>
 #include <linux/bitops.h>
 #include <linux/slab.h>
+#include <linux/interrupt.h>  /* for in_interrupt() */
 #include <linux/kmod.h>
 #include <linux/init.h>
 #include <linux/spinlock.h>
@@ -423,9 +424,9 @@ static void usb_release_dev(struct device *dev)
 	kfree(udev);
 }
 
-static int usb_dev_uevent(const struct device *dev, struct kobj_uevent_env *env)
+static int usb_dev_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
-	const struct usb_device *usb_dev;
+	struct usb_device *usb_dev;
 
 	usb_dev = to_usb_device(dev);
 
@@ -505,10 +506,10 @@ static const struct dev_pm_ops usb_device_pm_ops = {
 #endif	/* CONFIG_PM */
 
 
-static char *usb_devnode(const struct device *dev,
+static char *usb_devnode(struct device *dev,
 			 umode_t *mode, kuid_t *uid, kgid_t *gid)
 {
-	const struct usb_device *usb_dev;
+	struct usb_device *usb_dev;
 
 	usb_dev = to_usb_device(dev);
 	return kasprintf(GFP_KERNEL, "bus/usb/%03d/%03d",
@@ -560,8 +561,7 @@ static bool usb_dev_authorized(struct usb_device *dev, struct usb_hcd *hcd)
  * @parent: hub to which device is connected; null to allocate a root hub
  * @bus: bus used to access the device
  * @port1: one-based index of port; ignored for root hubs
- *
- * Context: task context, might sleep.
+ * Context: !in_interrupt()
  *
  * Only hub drivers (including virtual root hub drivers for host
  * controllers) should ever call this.
@@ -688,10 +688,6 @@ EXPORT_SYMBOL_GPL(usb_alloc_dev);
  * Drivers for USB interfaces should normally record such references in
  * their probe() methods, when they bind to an interface, and release
  * them by calling usb_put_dev(), in their disconnect() methods.
- * However, if a driver does not access the usb_device structure after
- * its disconnect() method returns then refcounting is not necessary,
- * because the USB core guarantees that a usb_device will not be
- * deallocated until after all of its interface drivers have been unbound.
  *
  * Return: A pointer to the device with the incremented reference counter.
  */
@@ -726,10 +722,6 @@ EXPORT_SYMBOL_GPL(usb_put_dev);
  * Drivers for USB interfaces should normally record such references in
  * their probe() methods, when they bind to an interface, and release
  * them by calling usb_put_intf(), in their disconnect() methods.
- * However, if a driver does not access the usb_interface structure after
- * its disconnect() method returns then refcounting is not necessary,
- * because the USB core guarantees that a usb_interface will not be
- * deallocated until after its driver has been unbound.
  *
  * Return: A pointer to the interface with the incremented reference counter.
  */
@@ -801,7 +793,7 @@ EXPORT_SYMBOL_GPL(usb_intf_get_dma_device);
  * is simple:
  *
  *	When locking both a device and its parent, always lock the
- *	parent first.
+ *	the parent first.
  */
 
 /**
@@ -990,15 +982,17 @@ static struct notifier_block usb_bus_nb = {
 	.notifier_call = usb_bus_notify,
 };
 
+static struct dentry *usb_devices_root;
+
 static void usb_debugfs_init(void)
 {
-	debugfs_create_file("devices", 0444, usb_debug_root, NULL,
-			    &usbfs_devices_fops);
+	usb_devices_root = debugfs_create_file("devices", 0444, usb_debug_root,
+					       NULL, &usbfs_devices_fops);
 }
 
 static void usb_debugfs_cleanup(void)
 {
-	debugfs_lookup_and_remove("devices", usb_debug_root);
+	debugfs_remove(usb_devices_root);
 }
 
 /*

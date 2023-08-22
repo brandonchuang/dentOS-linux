@@ -29,7 +29,6 @@
 
 #include <linux/module.h>
 #include <linux/export.h>
-#include <linux/filter.h>
 #include <linux/sched/signal.h>
 
 #include <net/bluetooth/bluetooth.h>
@@ -162,11 +161,7 @@ static int l2cap_sock_bind(struct socket *sock, struct sockaddr *addr, int alen)
 		break;
 	}
 
-	/* Use L2CAP_MODE_LE_FLOWCTL (CoC) in case of LE address and
-	 * L2CAP_MODE_EXT_FLOWCTL (ECRED) has not been set.
-	 */
-	if (chan->psm && bdaddr_type_is_le(chan->src_type) &&
-	    chan->mode != L2CAP_MODE_EXT_FLOWCTL)
+	if (chan->psm && bdaddr_type_is_le(chan->src_type))
 		chan->mode = L2CAP_MODE_LE_FLOWCTL;
 
 	chan->state = BT_BOUND;
@@ -177,21 +172,6 @@ done:
 	return err;
 }
 
-static void l2cap_sock_init_pid(struct sock *sk)
-{
-	struct l2cap_chan *chan = l2cap_pi(sk)->chan;
-
-	/* Only L2CAP_MODE_EXT_FLOWCTL ever need to access the PID in order to
-	 * group the channels being requested.
-	 */
-	if (chan->mode != L2CAP_MODE_EXT_FLOWCTL)
-		return;
-
-	spin_lock(&sk->sk_peer_lock);
-	sk->sk_peer_pid = get_pid(task_tgid(current));
-	spin_unlock(&sk->sk_peer_lock);
-}
-
 static int l2cap_sock_connect(struct socket *sock, struct sockaddr *addr,
 			      int alen, int flags)
 {
@@ -199,16 +179,8 @@ static int l2cap_sock_connect(struct socket *sock, struct sockaddr *addr,
 	struct l2cap_chan *chan = l2cap_pi(sk)->chan;
 	struct sockaddr_l2 la;
 	int len, err = 0;
-	bool zapped;
 
 	BT_DBG("sk %p", sk);
-
-	lock_sock(sk);
-	zapped = sock_flag(sk, SOCK_ZAPPED);
-	release_sock(sk);
-
-	if (zapped)
-		return -EINVAL;
 
 	if (!addr || alen < offsetofend(struct sockaddr, sa_family) ||
 	    addr->sa_family != AF_BLUETOOTH)
@@ -260,14 +232,8 @@ static int l2cap_sock_connect(struct socket *sock, struct sockaddr *addr,
 			return -EINVAL;
 	}
 
-	/* Use L2CAP_MODE_LE_FLOWCTL (CoC) in case of LE address and
-	 * L2CAP_MODE_EXT_FLOWCTL (ECRED) has not been set.
-	 */
-	if (chan->psm && bdaddr_type_is_le(chan->src_type) &&
-	    chan->mode != L2CAP_MODE_EXT_FLOWCTL)
+	if (chan->psm && bdaddr_type_is_le(chan->src_type) && !chan->mode)
 		chan->mode = L2CAP_MODE_LE_FLOWCTL;
-
-	l2cap_sock_init_pid(sk);
 
 	err = l2cap_chan_connect(chan, la.l2_psm, __le16_to_cpu(la.l2_cid),
 				 &la.l2_bdaddr, la.l2_bdaddr_type);
@@ -323,8 +289,6 @@ static int l2cap_sock_listen(struct socket *sock, int backlog)
 		err = -EOPNOTSUPP;
 		goto done;
 	}
-
-	l2cap_sock_init_pid(sk);
 
 	sk->sk_max_ack_backlog = backlog;
 	sk->sk_ack_backlog = 0;
@@ -904,8 +868,6 @@ static int l2cap_sock_setsockopt(struct socket *sock, int level, int optname,
 	struct l2cap_conn *conn;
 	int len, err = 0;
 	u32 opt;
-	u16 mtu;
-	u8 mode;
 
 	BT_DBG("sk %p", sk);
 
@@ -1088,16 +1050,16 @@ static int l2cap_sock_setsockopt(struct socket *sock, int level, int optname,
 			break;
 		}
 
-		if (copy_from_sockptr(&mtu, optval, sizeof(u16))) {
+		if (copy_from_sockptr(&opt, optval, sizeof(u16))) {
 			err = -EFAULT;
 			break;
 		}
 
 		if (chan->mode == L2CAP_MODE_EXT_FLOWCTL &&
 		    sk->sk_state == BT_CONNECTED)
-			err = l2cap_chan_reconfigure(chan, mtu);
+			err = l2cap_chan_reconfigure(chan, opt);
 		else
-			chan->imtu = mtu;
+			chan->imtu = opt;
 
 		break;
 
@@ -1119,14 +1081,14 @@ static int l2cap_sock_setsockopt(struct socket *sock, int level, int optname,
 			break;
 		}
 
-		if (copy_from_sockptr(&mode, optval, sizeof(u8))) {
+		if (copy_from_sockptr(&opt, optval, sizeof(u8))) {
 			err = -EFAULT;
 			break;
 		}
 
-		BT_DBG("mode %u", mode);
+		BT_DBG("opt %u", opt);
 
-		err = l2cap_set_mode(chan, mode);
+		err = l2cap_set_mode(chan, opt);
 		if (err)
 			break;
 
@@ -1538,9 +1500,6 @@ static void l2cap_sock_close_cb(struct l2cap_chan *chan)
 {
 	struct sock *sk = chan->data;
 
-	if (!sk)
-		return;
-
 	l2cap_sock_kill(sk);
 }
 
@@ -1548,9 +1507,6 @@ static void l2cap_sock_teardown_cb(struct l2cap_chan *chan, int err)
 {
 	struct sock *sk = chan->data;
 	struct sock *parent;
-
-	if (!sk)
-		return;
 
 	BT_DBG("chan %p state %s", chan, state_to_string(chan->state));
 
@@ -1623,14 +1579,6 @@ static struct sk_buff *l2cap_sock_alloc_skb_cb(struct l2cap_chan *chan,
 
 	if (!skb)
 		return ERR_PTR(err);
-
-	/* Channel lock is released before requesting new skb and then
-	 * reacquired thus we need to recheck channel state.
-	 */
-	if (chan->state != BT_CONNECTED) {
-		kfree_skb(skb);
-		return ERR_PTR(-ENOTCONN);
-	}
 
 	skb->priority = sk->sk_priority;
 
@@ -1751,10 +1699,8 @@ static void l2cap_sock_destruct(struct sock *sk)
 {
 	BT_DBG("sk %p", sk);
 
-	if (l2cap_pi(sk)->chan) {
-		l2cap_pi(sk)->chan->data = NULL;
+	if (l2cap_pi(sk)->chan)
 		l2cap_chan_put(l2cap_pi(sk)->chan);
-	}
 
 	if (l2cap_pi(sk)->rx_busy_skb) {
 		kfree_skb(l2cap_pi(sk)->rx_busy_skb);

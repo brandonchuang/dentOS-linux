@@ -10,6 +10,8 @@
 #include "dax-private.h"
 #include "bus.h"
 
+static struct class *dax_class;
+
 static DEFINE_MUTEX(dax_bus_lock);
 
 #define DAX_NAME_LEN 30
@@ -18,7 +20,7 @@ struct dax_id {
 	char dev_name[DAX_NAME_LEN];
 };
 
-static int dax_bus_uevent(const struct device *dev, struct kobj_uevent_env *env)
+static int dax_bus_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
 	/*
 	 * We only ever expect to handle device-dax instances, i.e. the
@@ -56,25 +58,6 @@ static int dax_match_id(struct dax_device_driver *dax_drv, struct device *dev)
 	return match;
 }
 
-static int dax_match_type(struct dax_device_driver *dax_drv, struct device *dev)
-{
-	enum dax_driver_type type = DAXDRV_DEVICE_TYPE;
-	struct dev_dax *dev_dax = to_dev_dax(dev);
-
-	if (dev_dax->region->res.flags & IORESOURCE_DAX_KMEM)
-		type = DAXDRV_KMEM_TYPE;
-
-	if (dax_drv->type == type)
-		return 1;
-
-	/* default to device mode if dax_kmem is disabled */
-	if (dax_drv->type == DAXDRV_DEVICE_TYPE &&
-	    !IS_ENABLED(CONFIG_DEV_DAX_KMEM))
-		return 1;
-
-	return 0;
-}
-
 enum id_action {
 	ID_REMOVE,
 	ID_ADD,
@@ -107,11 +90,13 @@ static ssize_t do_id_store(struct device_driver *drv, const char *buf,
 				list_add(&dax_id->list, &dax_drv->ids);
 			} else
 				rc = -ENOMEM;
-		}
+		} else
+			/* nothing to remove */;
 	} else if (action == ID_REMOVE) {
 		list_del(&dax_id->list);
 		kfree(dax_id);
-	}
+	} else
+		/* dax_id already added */;
 	mutex_unlock(&dax_bus_lock);
 
 	if (rc < 0)
@@ -146,34 +131,10 @@ ATTRIBUTE_GROUPS(dax_drv);
 
 static int dax_bus_match(struct device *dev, struct device_driver *drv);
 
-/*
- * Static dax regions are regions created by an external subsystem
- * nvdimm where a single range is assigned. Its boundaries are by the external
- * subsystem and are usually limited to one physical memory range. For example,
- * for PMEM it is usually defined by NVDIMM Namespace boundaries (i.e. a
- * single contiguous range)
- *
- * On dynamic dax regions, the assigned region can be partitioned by dax core
- * into multiple subdivisions. A subdivision is represented into one
- * /dev/daxN.M device composed by one or more potentially discontiguous ranges.
- *
- * When allocating a dax region, drivers must set whether it's static
- * (IORESOURCE_DAX_STATIC).  On static dax devices, the @pgmap is pre-assigned
- * to dax core when calling devm_create_dev_dax(), whereas in dynamic dax
- * devices it is NULL but afterwards allocated by dax core on device ->probe().
- * Care is needed to make sure that dynamic dax devices are torn down with a
- * cleared @pgmap field (see kill_dev_dax()).
- */
 static bool is_static(struct dax_region *dax_region)
 {
 	return (dax_region->res.flags & IORESOURCE_DAX_STATIC) != 0;
 }
-
-bool static_dev_dax(struct dev_dax *dev_dax)
-{
-	return is_static(dev_dax->region);
-}
-EXPORT_SYMBOL_GPL(static_dev_dax);
 
 static u64 dev_dax_size(struct dev_dax *dev_dax)
 {
@@ -213,13 +174,12 @@ static int dax_bus_probe(struct device *dev)
 	return 0;
 }
 
-static void dax_bus_remove(struct device *dev)
+static int dax_bus_remove(struct device *dev)
 {
 	struct dax_device_driver *dax_drv = to_dax_drv(dev->driver);
 	struct dev_dax *dev_dax = to_dev_dax(dev);
 
-	if (dax_drv->remove)
-		dax_drv->remove(dev_dax);
+	return dax_drv->remove(dev_dax);
 }
 
 static struct bus_type dax_bus_type = {
@@ -235,9 +195,14 @@ static int dax_bus_match(struct device *dev, struct device_driver *drv)
 {
 	struct dax_device_driver *dax_drv = to_dax_drv(drv);
 
-	if (dax_match_id(dax_drv, dev))
+	/*
+	 * All but the 'device-dax' driver, which has 'match_always'
+	 * set, requires an exact id match.
+	 */
+	if (dax_drv->match_always)
 		return 1;
-	return dax_match_type(dax_drv, dev);
+
+	return dax_match_id(dax_drv, dev);
 }
 
 /*
@@ -399,14 +364,6 @@ void kill_dev_dax(struct dev_dax *dev_dax)
 
 	kill_dax(dax_dev);
 	unmap_mapping_range(inode->i_mapping, 0, 0, 1);
-
-	/*
-	 * Dynamic dax region have the pgmap allocated via dev_kzalloc()
-	 * and thus freed by devm. Clear the pgmap to not have stale pgmap
-	 * ranges on probe() from previous reconfigurations of region devices.
-	 */
-	if (!static_dev_dax(dev_dax))
-		dev_dax->pgmap = NULL;
 }
 EXPORT_SYMBOL_GPL(kill_dev_dax);
 
@@ -441,8 +398,8 @@ static void unregister_dev_dax(void *dev)
 	dev_dbg(dev, "%s\n", __func__);
 
 	kill_dev_dax(dev_dax);
-	device_del(dev);
 	free_dev_dax_ranges(dev_dax);
+	device_del(dev);
 	put_device(dev);
 }
 
@@ -815,14 +772,22 @@ static int alloc_dev_dax_range(struct dev_dax *dev_dax, u64 start,
 		return 0;
 	}
 
-	alloc = __request_region(res, start, size, dev_name(dev), 0);
-	if (!alloc)
-		return -ENOMEM;
-
 	ranges = krealloc(dev_dax->ranges, sizeof(*ranges)
 			* (dev_dax->nr_range + 1), GFP_KERNEL);
-	if (!ranges) {
-		__release_region(res, alloc->start, resource_size(alloc));
+	if (!ranges)
+		return -ENOMEM;
+
+	alloc = __request_region(res, start, size, dev_name(dev), 0);
+	if (!alloc) {
+		/*
+		 * If this was an empty set of ranges nothing else
+		 * will release @ranges, so do it now.
+		 */
+		if (!dev_dax->nr_range) {
+			kfree(ranges);
+			ranges = NULL;
+		}
+		dev_dax->ranges = ranges;
 		return -ENOMEM;
 	}
 
@@ -1148,8 +1113,15 @@ static ssize_t align_show(struct device *dev,
 
 static ssize_t dev_dax_validate_align(struct dev_dax *dev_dax)
 {
+	resource_size_t dev_size = dev_dax_size(dev_dax);
 	struct device *dev = &dev_dax->dev;
 	int i;
+
+	if (dev_size > 0 && !alloc_is_aligned(dev_dax, dev_size)) {
+		dev_dbg(dev, "%s: align %u invalid for size %pa\n",
+			__func__, dev_dax->align, &dev_size);
+		return -EINVAL;
+	}
 
 	for (i = 0; i < dev_dax->nr_range; i++) {
 		size_t len = range_len(&dev_dax->ranges[i].range);
@@ -1367,17 +1339,14 @@ struct dev_dax *devm_create_dev_dax(struct dev_dax_data *data)
 	}
 
 	/*
-	 * No dax_operations since there is no access to this device outside of
-	 * mmap of the resulting character device.
+	 * No 'host' or dax_operations since there is no access to this
+	 * device outside of mmap of the resulting character device.
 	 */
-	dax_dev = alloc_dax(dev_dax, NULL);
+	dax_dev = alloc_dax(dev_dax, NULL, NULL, DAXDEV_F_SYNC);
 	if (IS_ERR(dax_dev)) {
 		rc = PTR_ERR(dax_dev);
 		goto err_alloc_dax;
 	}
-	set_dax_synchronous(dax_dev);
-	set_dax_nocache(dax_dev);
-	set_dax_nomc(dax_dev);
 
 	/* a device_dax instance is dead while the driver is not attached */
 	kill_dax(dax_dev);
@@ -1390,7 +1359,10 @@ struct dev_dax *devm_create_dev_dax(struct dev_dax_data *data)
 
 	inode = dax_inode(dax_dev);
 	dev->devt = inode->i_rdev;
-	dev->bus = &dax_bus_type;
+	if (data->subsys == DEV_DAX_BUS)
+		dev->bus = &dax_bus_type;
+	else
+		dev->class = dax_class;
 	dev->parent = parent;
 	dev->type = &dev_dax_type;
 
@@ -1427,17 +1399,13 @@ err_id:
 }
 EXPORT_SYMBOL_GPL(devm_create_dev_dax);
 
+static int match_always_count;
+
 int __dax_driver_register(struct dax_device_driver *dax_drv,
 		struct module *module, const char *mod_name)
 {
 	struct device_driver *drv = &dax_drv->drv;
-
-	/*
-	 * dax_bus_probe() calls dax_drv->probe() unconditionally.
-	 * So better be safe than sorry and ensure it is provided.
-	 */
-	if (!dax_drv->probe)
-		return -EINVAL;
+	int rc = 0;
 
 	INIT_LIST_HEAD(&dax_drv->ids);
 	drv->owner = module;
@@ -1445,6 +1413,17 @@ int __dax_driver_register(struct dax_device_driver *dax_drv,
 	drv->mod_name = mod_name;
 	drv->bus = &dax_bus_type;
 
+	/* there can only be one default driver */
+	mutex_lock(&dax_bus_lock);
+	match_always_count += dax_drv->match_always;
+	if (match_always_count > 1) {
+		match_always_count--;
+		WARN_ON(1);
+		rc = -EINVAL;
+	}
+	mutex_unlock(&dax_bus_lock);
+	if (rc)
+		return rc;
 	return driver_register(drv);
 }
 EXPORT_SYMBOL_GPL(__dax_driver_register);
@@ -1455,6 +1434,7 @@ void dax_driver_unregister(struct dax_device_driver *dax_drv)
 	struct dax_id *dax_id, *_id;
 
 	mutex_lock(&dax_bus_lock);
+	match_always_count -= dax_drv->match_always;
 	list_for_each_entry_safe(dax_id, _id, &dax_drv->ids, list) {
 		list_del(&dax_id->list);
 		kfree(dax_id);
@@ -1466,10 +1446,22 @@ EXPORT_SYMBOL_GPL(dax_driver_unregister);
 
 int __init dax_bus_init(void)
 {
-	return bus_register(&dax_bus_type);
+	int rc;
+
+	if (IS_ENABLED(CONFIG_DEV_DAX_PMEM_COMPAT)) {
+		dax_class = class_create(THIS_MODULE, "dax");
+		if (IS_ERR(dax_class))
+			return PTR_ERR(dax_class);
+	}
+
+	rc = bus_register(&dax_bus_type);
+	if (rc)
+		class_destroy(dax_class);
+	return rc;
 }
 
 void __exit dax_bus_exit(void)
 {
 	bus_unregister(&dax_bus_type);
+	class_destroy(dax_class);
 }

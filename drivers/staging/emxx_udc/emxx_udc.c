@@ -34,10 +34,8 @@
 #define	DRIVER_DESC	"EMXX UDC driver"
 #define	DMA_ADDR_INVALID	(~(dma_addr_t)0)
 
-static struct gpio_desc *vbus_gpio;
-static int vbus_irq;
-
 static const char	driver_name[] = "emxx_udc";
+static const char	driver_desc[] = DRIVER_DESC;
 
 /*===========================================================================*/
 /* Prototype */
@@ -1004,7 +1002,10 @@ static int _nbu2ss_in_dma(struct nbu2ss_udc *udc, struct nbu2ss_ep *ep,
 	/* MAX Packet Size */
 	mpkt = _nbu2ss_readl(&preg->EP_REGS[num].EP_PCKT_ADRS) & EPN_MPKT;
 
-	i_write_length = min(DMA_MAX_COUNT * mpkt, length);
+	if ((DMA_MAX_COUNT * mpkt) < length)
+		i_write_length = DMA_MAX_COUNT * mpkt;
+	else
+		i_write_length = length;
 
 	/*------------------------------------------------------------*/
 	/* Number of transmission packets */
@@ -1070,8 +1071,9 @@ static int _nbu2ss_epn_in_pio(struct nbu2ss_udc *udc, struct nbu2ss_ep *ep,
 		i_word_length = length / sizeof(u32);
 		if (i_word_length > 0) {
 			for (i = 0; i < i_word_length; i++) {
-				_nbu2ss_writel(&preg->EP_REGS[ep->epnum - 1].EP_WRITE,
-					       p_buf_32->dw);
+				_nbu2ss_writel(
+					&preg->EP_REGS[ep->epnum - 1].EP_WRITE,
+					p_buf_32->dw);
 
 				p_buf_32++;
 			}
@@ -1221,7 +1223,8 @@ static void _nbu2ss_restert_transfer(struct nbu2ss_ep *ep)
 		return;
 
 	if (ep->epnum > 0) {
-		length = _nbu2ss_readl(&ep->udc->p_regs->EP_REGS[ep->epnum - 1].EP_LEN_DCNT);
+		length = _nbu2ss_readl(
+			&ep->udc->p_regs->EP_REGS[ep->epnum - 1].EP_LEN_DCNT);
 
 		length &= EPN_LDATA;
 		if (length < ep->ep.maxpacket)
@@ -1457,7 +1460,8 @@ static void _nbu2ss_epn_set_stall(struct nbu2ss_udc *udc,
 		for (limit_cnt = 0
 			; limit_cnt < IN_DATA_EMPTY_COUNT
 			; limit_cnt++) {
-			regdata = _nbu2ss_readl(&preg->EP_REGS[ep->epnum - 1].EP_STATUS);
+			regdata = _nbu2ss_readl(
+				&preg->EP_REGS[ep->epnum - 1].EP_STATUS);
 
 			if ((regdata & EPN_IN_DATA) == 0)
 				break;
@@ -2058,7 +2062,7 @@ static int _nbu2ss_nuke(struct nbu2ss_udc *udc,
 			struct nbu2ss_ep *ep,
 			int status)
 {
-	struct nbu2ss_req *req, *n;
+	struct nbu2ss_req *req;
 
 	/* Endpoint Disable */
 	_nbu2ss_epn_exit(udc, ep);
@@ -2070,7 +2074,7 @@ static int _nbu2ss_nuke(struct nbu2ss_udc *udc,
 		return 0;
 
 	/* called with irqs blocked */
-	list_for_each_entry_safe(req, n, &ep->queue, queue) {
+	list_for_each_entry(req, &ep->queue, queue) {
 		_nbu2ss_ep_done(ep, req, status);
 	}
 
@@ -2587,15 +2591,10 @@ static int nbu2ss_ep_queue(struct usb_ep *_ep,
 		req->unaligned = false;
 
 	if (req->unaligned) {
-		if (!ep->virt_buf) {
+		if (!ep->virt_buf)
 			ep->virt_buf = dma_alloc_coherent(udc->dev, PAGE_SIZE,
 							  &ep->phys_buf,
 							  GFP_ATOMIC | GFP_DMA);
-			if (!ep->virt_buf) {
-				spin_unlock_irqrestore(&udc->lock, flags);
-				return -ENOMEM;
-			}
-		}
 		if (ep->epnum > 0)  {
 			if (ep->direct == USB_DIR_IN)
 				memcpy(ep->virt_buf, req->req.buf,

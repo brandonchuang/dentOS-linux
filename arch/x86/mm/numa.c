@@ -254,13 +254,7 @@ int __init numa_cleanup_meminfo(struct numa_meminfo *mi)
 
 		/* make sure all non-reserved blocks are inside the limits */
 		bi->start = max(bi->start, low);
-
-		/* preserve info for non-RAM areas above 'max_pfn': */
-		if (bi->end > high) {
-			numa_add_memblk_to(bi->nid, high, bi->end,
-					   &numa_reserved_meminfo);
-			bi->end = high;
-		}
+		bi->end = min(bi->end, high);
 
 		/* and there's no empty block */
 		if (bi->start >= bi->end)
@@ -355,7 +349,7 @@ void __init numa_reset_distance(void)
 
 	/* numa_distance could be 1LU marking allocation failure, test cnt */
 	if (numa_distance_cnt)
-		memblock_free(numa_distance, size);
+		memblock_free(__pa(numa_distance), size);
 	numa_distance_cnt = 0;
 	numa_distance = NULL;	/* enable table creation */
 }
@@ -376,14 +370,15 @@ static int __init numa_alloc_distance(void)
 	cnt++;
 	size = cnt * cnt * sizeof(numa_distance[0]);
 
-	phys = memblock_phys_alloc_range(size, PAGE_SIZE, 0,
-					 PFN_PHYS(max_pfn_mapped));
+	phys = memblock_find_in_range(0, PFN_PHYS(max_pfn_mapped),
+				      size, PAGE_SIZE);
 	if (!phys) {
 		pr_warn("Warning: can't allocate distance table!\n");
 		/* don't retry until explicitly reset */
 		numa_distance = (void *)1LU;
 		return -ENOMEM;
 	}
+	memblock_reserve(phys, size);
 
 	numa_distance = __va(phys);
 	numa_distance_cnt = cnt;
@@ -738,6 +733,17 @@ void __init x86_numa_init(void)
 	numa_init(dummy_numa_init);
 }
 
+static void __init init_memory_less_node(int nid)
+{
+	/* Allocate and initialize node data. Memory-less node is now online.*/
+	alloc_node_data(nid);
+	free_area_init_memoryless_node(nid);
+
+	/*
+	 * All zonelists will be built later in start_kernel() after per cpu
+	 * areas are initialized.
+	 */
+}
 
 /*
  * A node may exist which has one or more Generic Initiators but no CPUs and no
@@ -755,18 +761,9 @@ void __init init_gi_nodes(void)
 {
 	int nid;
 
-	/*
-	 * Exclude this node from
-	 * bringup_nonboot_cpus
-	 *  cpu_up
-	 *   __try_online_node
-	 *    register_one_node
-	 * because node_subsys is not initialized yet.
-	 * TODO remove dependency on node_online
-	 */
 	for_each_node_state(nid, N_GENERIC_INITIATOR)
 		if (!node_online(nid))
-			node_set_online(nid);
+			init_memory_less_node(nid);
 }
 
 /*
@@ -796,17 +793,8 @@ void __init init_cpu_to_node(void)
 		if (node == NUMA_NO_NODE)
 			continue;
 
-		/*
-		 * Exclude this node from
-		 * bringup_nonboot_cpus
-		 *  cpu_up
-		 *   __try_online_node
-		 *    register_one_node
-		 * because node_subsys is not initialized yet.
-		 * TODO remove dependency on node_online
-		 */
 		if (!node_online(node))
-			node_set_online(node);
+			init_memory_less_node(node);
 
 		numa_set_node(cpu, node);
 	}
@@ -867,7 +855,7 @@ void debug_cpumask_set_cpu(int cpu, int node, bool enable)
 		return;
 	}
 	mask = node_to_cpumask_map[node];
-	if (!cpumask_available(mask)) {
+	if (!mask) {
 		pr_err("node_to_cpumask_map[%i] NULL\n", node);
 		dump_stack();
 		return;
@@ -913,7 +901,7 @@ const struct cpumask *cpumask_of_node(int node)
 		dump_stack();
 		return cpu_none_mask;
 	}
-	if (!cpumask_available(node_to_cpumask_map[node])) {
+	if (node_to_cpumask_map[node] == NULL) {
 		printk(KERN_WARNING
 			"cpumask_of_node(%d): no node_to_cpumask_map!\n",
 			node);

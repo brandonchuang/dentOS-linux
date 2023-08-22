@@ -53,7 +53,6 @@ static const u8 ci_regs_nolpm[] = {
 	[OP_USBCMD]		= 0x00U,
 	[OP_USBSTS]		= 0x04U,
 	[OP_USBINTR]		= 0x08U,
-	[OP_FRINDEX]		= 0x0CU,
 	[OP_DEVICEADDR]		= 0x14U,
 	[OP_ENDPTLISTADDR]	= 0x18U,
 	[OP_TTCTRL]		= 0x1CU,
@@ -79,7 +78,6 @@ static const u8 ci_regs_lpm[] = {
 	[OP_USBCMD]		= 0x00U,
 	[OP_USBSTS]		= 0x04U,
 	[OP_USBINTR]		= 0x08U,
-	[OP_FRINDEX]		= 0x0CU,
 	[OP_DEVICEADDR]		= 0x14U,
 	[OP_ENDPTLISTADDR]	= 0x18U,
 	[OP_TTCTRL]		= 0x1CU,
@@ -197,7 +195,7 @@ static void hw_wait_phy_stable(void)
 }
 
 /* The PHY enters/leaves low power mode */
-static void ci_hdrc_enter_lpm_common(struct ci_hdrc *ci, bool enable)
+static void ci_hdrc_enter_lpm(struct ci_hdrc *ci, bool enable)
 {
 	enum ci_hw_regs reg = ci->hw_bank.lpm ? OP_DEVLC : OP_PORTSC;
 	bool lpm = !!(hw_read(ci, reg, PORTSC_PHCD(ci->hw_bank.lpm)));
@@ -208,11 +206,6 @@ static void ci_hdrc_enter_lpm_common(struct ci_hdrc *ci, bool enable)
 	else if (!enable && lpm)
 		hw_write(ci, reg, PORTSC_PHCD(ci->hw_bank.lpm),
 				0);
-}
-
-static void ci_hdrc_enter_lpm(struct ci_hdrc *ci, bool enable)
-{
-	return ci->platdata->enter_lpm(ci, enable);
 }
 
 static int hw_device_init(struct ci_hdrc *ci, void __iomem *base)
@@ -337,7 +330,7 @@ static int _ci_usb_phy_init(struct ci_hdrc *ci)
 }
 
 /**
- * ci_usb_phy_exit: deinitialize phy taking in account both phy and usb_phy
+ * _ci_usb_phy_exit: deinitialize phy taking in account both phy and usb_phy
  * interfaces
  * @ci: the controller
  */
@@ -516,7 +509,7 @@ int hw_device_reset(struct ci_hdrc *ci)
 	return 0;
 }
 
-static irqreturn_t ci_irq_handler(int irq, void *data)
+static irqreturn_t ci_irq(int irq, void *data)
 {
 	struct ci_hdrc *ci = data;
 	irqreturn_t ret = IRQ_NONE;
@@ -569,15 +562,6 @@ static irqreturn_t ci_irq_handler(int irq, void *data)
 	return ret;
 }
 
-static void ci_irq(struct ci_hdrc *ci)
-{
-	unsigned long flags;
-
-	local_irq_save(flags);
-	ci_irq_handler(ci->irq, ci);
-	local_irq_restore(flags);
-}
-
 static int ci_cable_notifier(struct notifier_block *nb, unsigned long event,
 			     void *ptr)
 {
@@ -587,7 +571,7 @@ static int ci_cable_notifier(struct notifier_block *nb, unsigned long event,
 	cbl->connected = event;
 	cbl->changed = true;
 
-	ci_irq(ci);
+	ci_irq(ci->irq, ci);
 	return NOTIFY_DONE;
 }
 
@@ -608,57 +592,50 @@ static int ci_usb_role_switch_set(struct usb_role_switch *sw,
 				  enum usb_role role)
 {
 	struct ci_hdrc *ci = usb_role_switch_get_drvdata(sw);
-	struct ci_hdrc_cable *cable;
+	struct ci_hdrc_cable *cable = NULL;
+	enum usb_role current_role = ci_role_to_usb_role(ci);
+	enum ci_role ci_role = usb_role_to_ci_role(role);
+	unsigned long flags;
 
-	if (role == USB_ROLE_HOST) {
-		cable = &ci->platdata->id_extcon;
-		cable->changed = true;
-		cable->connected = true;
+	if ((ci_role != CI_ROLE_END && !ci->roles[ci_role]) ||
+	    (current_role == role))
+		return 0;
+
+	pm_runtime_get_sync(ci->dev);
+	/* Stop current role */
+	spin_lock_irqsave(&ci->lock, flags);
+	if (current_role == USB_ROLE_DEVICE)
 		cable = &ci->platdata->vbus_extcon;
-		cable->changed = true;
-		cable->connected = false;
-	} else if (role == USB_ROLE_DEVICE) {
+	else if (current_role == USB_ROLE_HOST)
 		cable = &ci->platdata->id_extcon;
+
+	if (cable) {
 		cable->changed = true;
 		cable->connected = false;
-		cable = &ci->platdata->vbus_extcon;
-		cable->changed = true;
-		cable->connected = true;
-	} else {
-		cable = &ci->platdata->id_extcon;
-		cable->changed = true;
-		cable->connected = false;
-		cable = &ci->platdata->vbus_extcon;
-		cable->changed = true;
-		cable->connected = false;
+		ci_irq(ci->irq, ci);
+		spin_unlock_irqrestore(&ci->lock, flags);
+		if (ci->wq && role != USB_ROLE_NONE)
+			flush_workqueue(ci->wq);
+		spin_lock_irqsave(&ci->lock, flags);
 	}
 
-	ci_irq(ci);
+	cable = NULL;
+
+	/* Start target role */
+	if (role == USB_ROLE_DEVICE)
+		cable = &ci->platdata->vbus_extcon;
+	else if (role == USB_ROLE_HOST)
+		cable = &ci->platdata->id_extcon;
+
+	if (cable) {
+		cable->changed = true;
+		cable->connected = true;
+		ci_irq(ci->irq, ci);
+	}
+	spin_unlock_irqrestore(&ci->lock, flags);
+	pm_runtime_put_sync(ci->dev);
+
 	return 0;
-}
-
-static enum ci_role ci_get_role(struct ci_hdrc *ci)
-{
-	enum ci_role role;
-
-	if (ci->roles[CI_ROLE_HOST] && ci->roles[CI_ROLE_GADGET]) {
-		if (ci->is_otg) {
-			role = ci_otg_role(ci);
-			hw_write_otgsc(ci, OTGSC_IDIE, OTGSC_IDIE);
-		} else {
-			/*
-			 * If the controller is not OTG capable, but support
-			 * role switch, the defalt role is gadget, and the
-			 * user can switch it through debugfs.
-			 */
-			role = CI_ROLE_GADGET;
-		}
-	} else {
-		role = ci->roles[CI_ROLE_HOST] ? CI_ROLE_HOST
-					: CI_ROLE_GADGET;
-	}
-
-	return role;
 }
 
 static struct usb_role_switch_desc ci_role_switch = {
@@ -813,9 +790,6 @@ static int ci_get_platdata(struct device *dev,
 			platdata->pins_device = p;
 	}
 
-	if (!platdata->enter_lpm)
-		platdata->enter_lpm = ci_hdrc_enter_lpm_common;
-
 	return 0;
 }
 
@@ -873,7 +847,6 @@ struct platform_device *ci_hdrc_add_device(struct device *dev,
 	}
 
 	pdev->dev.parent = dev;
-	device_set_of_node_from_dev(&pdev->dev, dev);
 
 	ret = platform_device_add_resources(pdev, res, nres);
 	if (ret)
@@ -984,15 +957,8 @@ static ssize_t role_store(struct device *dev,
 			     strlen(ci->roles[role]->name)))
 			break;
 
-	if (role == CI_ROLE_END)
+	if (role == CI_ROLE_END || role == ci->role)
 		return -EINVAL;
-
-	mutex_lock(&ci->mutex);
-
-	if (role == ci->role) {
-		mutex_unlock(&ci->mutex);
-		return n;
-	}
 
 	pm_runtime_get_sync(dev);
 	disable_irq(ci->irq);
@@ -1002,7 +968,6 @@ static ssize_t role_store(struct device *dev,
 		ci_handle_vbus_change(ci);
 	enable_irq(ci->irq);
 	pm_runtime_put_sync(dev);
-	mutex_unlock(&ci->mutex);
 
 	return (ret == 0) ? n : ret;
 }
@@ -1038,7 +1003,6 @@ static int ci_hdrc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	spin_lock_init(&ci->lock);
-	mutex_init(&ci->mutex);
 	ci->dev = dev;
 	ci->platdata = dev_get_platdata(dev);
 	ci->imx28_write_fix = !!(ci->platdata->flags &
@@ -1167,7 +1131,25 @@ static int ci_hdrc_probe(struct platform_device *pdev)
 		}
 	}
 
-	ci->role = ci_get_role(ci);
+	if (ci->roles[CI_ROLE_HOST] && ci->roles[CI_ROLE_GADGET]) {
+		if (ci->is_otg) {
+			ci->role = ci_otg_role(ci);
+			/* Enable ID change irq */
+			hw_write_otgsc(ci, OTGSC_IDIE, OTGSC_IDIE);
+		} else {
+			/*
+			 * If the controller is not OTG capable, but support
+			 * role switch, the defalt role is gadget, and the
+			 * user can switch it through debugfs.
+			 */
+			ci->role = CI_ROLE_GADGET;
+		}
+	} else {
+		ci->role = ci->roles[CI_ROLE_HOST]
+			? CI_ROLE_HOST
+			: CI_ROLE_GADGET;
+	}
+
 	if (!ci_otg_is_fsm_mode(ci)) {
 		/* only update vbus status for peripheral */
 		if (ci->role == CI_ROLE_GADGET) {
@@ -1184,7 +1166,7 @@ static int ci_hdrc_probe(struct platform_device *pdev)
 		}
 	}
 
-	ret = devm_request_irq(dev, ci->irq, ci_irq_handler, IRQF_SHARED,
+	ret = devm_request_irq(dev, ci->irq, ci_irq, IRQF_SHARED,
 			ci->platdata->name, ci);
 	if (ret)
 		goto stop;
@@ -1303,15 +1285,13 @@ static void ci_extcon_wakeup_int(struct ci_hdrc *ci)
 	cable_id = &ci->platdata->id_extcon;
 	cable_vbus = &ci->platdata->vbus_extcon;
 
-	if ((!IS_ERR(cable_id->edev) || ci->role_switch)
-		&& ci->is_otg &&
+	if (!IS_ERR(cable_id->edev) && ci->is_otg &&
 		(otgsc & OTGSC_IDIE) && (otgsc & OTGSC_IDIS))
-		ci_irq(ci);
+		ci_irq(ci->irq, ci);
 
-	if ((!IS_ERR(cable_vbus->edev) || ci->role_switch)
-		&& ci->is_otg &&
+	if (!IS_ERR(cable_vbus->edev) && ci->is_otg &&
 		(otgsc & OTGSC_BSVIE) && (otgsc & OTGSC_BSVIS))
-		ci_irq(ci);
+		ci_irq(ci->irq, ci);
 }
 
 static int ci_controller_resume(struct device *dev)
@@ -1373,10 +1353,6 @@ static int ci_suspend(struct device *dev)
 		return 0;
 	}
 
-	/* Extra routine per role before system suspend */
-	if (ci->role != CI_ROLE_END && ci_role(ci)->suspend)
-		ci_role(ci)->suspend(ci);
-
 	if (device_may_wakeup(dev)) {
 		if (ci_otg_is_fsm_mode(ci))
 			ci_otg_fsm_suspend_for_srp(ci);
@@ -1390,37 +1366,10 @@ static int ci_suspend(struct device *dev)
 	return 0;
 }
 
-static void ci_handle_power_lost(struct ci_hdrc *ci)
-{
-	enum ci_role role;
-
-	disable_irq_nosync(ci->irq);
-	if (!ci_otg_is_fsm_mode(ci)) {
-		role = ci_get_role(ci);
-
-		if (ci->role != role) {
-			ci_handle_id_switch(ci);
-		} else if (role == CI_ROLE_GADGET) {
-			if (ci->is_otg && hw_read_otgsc(ci, OTGSC_BSV))
-				usb_gadget_vbus_connect(&ci->gadget);
-		}
-	}
-
-	enable_irq(ci->irq);
-}
-
 static int ci_resume(struct device *dev)
 {
 	struct ci_hdrc *ci = dev_get_drvdata(dev);
-	bool power_lost;
 	int ret;
-
-	/* Since ASYNCLISTADDR (host mode) and ENDPTLISTADDR (device
-	 * mode) share the same register address. We can check if
-	 * controller resume from power lost based on this address
-	 * due to this register will be reset after power lost.
-	 */
-	power_lost = !hw_read(ci, OP_ENDPTLISTADDR, ~0);
 
 	if (device_may_wakeup(dev))
 		disable_irq_wake(ci->irq);
@@ -1428,19 +1377,6 @@ static int ci_resume(struct device *dev)
 	ret = ci_controller_resume(dev);
 	if (ret)
 		return ret;
-
-	if (power_lost) {
-		/* shutdown and re-init for phy */
-		ci_usb_phy_exit(ci);
-		ci_usb_phy_init(ci);
-	}
-
-	/* Extra routine per role after system resume */
-	if (ci->role != CI_ROLE_END && ci_role(ci)->resume)
-		ci_role(ci)->resume(ci, power_lost);
-
-	if (power_lost)
-		ci_handle_power_lost(ci);
 
 	if (ci->supports_runtime_pm) {
 		pm_runtime_disable(dev);

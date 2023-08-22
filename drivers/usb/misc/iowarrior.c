@@ -99,6 +99,10 @@ struct iowarrior {
 /*    globals   */
 /*--------------*/
 
+/*
+ *  USB spec identifies 5 second timeouts.
+ */
+#define GET_TIMEOUT 5
 #define USB_REQ_GET_REPORT  0x01
 //#if 0
 static int usb_get_report(struct usb_device *dev,
@@ -110,7 +114,7 @@ static int usb_get_report(struct usb_device *dev,
 			       USB_DIR_IN | USB_TYPE_CLASS |
 			       USB_RECIP_INTERFACE, (type << 8) + id,
 			       inter->desc.bInterfaceNumber, buf, size,
-			       USB_CTRL_GET_TIMEOUT);
+			       GET_TIMEOUT*HZ);
 }
 //#endif
 
@@ -125,7 +129,7 @@ static int usb_set_report(struct usb_interface *intf, unsigned char type,
 			       USB_TYPE_CLASS | USB_RECIP_INTERFACE,
 			       (type << 8) + id,
 			       intf->cur_altsetting->desc.bInterfaceNumber, buf,
-			       size, 1000);
+			       size, HZ);
 }
 
 /*---------------------*/
@@ -380,6 +384,7 @@ static ssize_t iowarrior_write(struct file *file,
 		retval = usb_set_report(dev->interface, 2, 0, buf, count);
 		kfree(buf);
 		goto exit;
+		break;
 	case USB_DEVICE_ID_CODEMERCS_IOW56:
 	case USB_DEVICE_ID_CODEMERCS_IOW56AM:
 	case USB_DEVICE_ID_CODEMERCS_IOW28:
@@ -449,12 +454,14 @@ static ssize_t iowarrior_write(struct file *file,
 		retval = count;
 		usb_free_urb(int_out_urb);
 		goto exit;
+		break;
 	default:
 		/* what do we have here ? An unsupported Product-ID ? */
 		dev_err(&dev->interface->dev, "%s - not supported for product=0x%x\n",
 			__func__, dev->product_id);
 		retval = -EFAULT;
 		goto exit;
+		break;
 	}
 error:
 	usb_free_coherent(dev->udev, dev->report_size, buf,
@@ -717,7 +724,7 @@ static const struct file_operations iowarrior_fops = {
 	.llseek = noop_llseek,
 };
 
-static char *iowarrior_devnode(const struct device *dev, umode_t *mode)
+static char *iowarrior_devnode(struct device *dev, umode_t *mode)
 {
 	return kasprintf(GFP_KERNEL, "usb/%s", dev_name(dev));
 }
@@ -814,7 +821,7 @@ static int iowarrior_probe(struct usb_interface *interface,
 			break;
 
 		case USB_DEVICE_ID_CODEMERCS_IOW100:
-			dev->report_size = 12;
+			dev->report_size = 13;
 			break;
 		}
 	}

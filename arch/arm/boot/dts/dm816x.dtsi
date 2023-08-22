@@ -1,4 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * This file is licensed under the terms of the GNU General Public License
+ * version 2.  This program is licensed "as is" without any warranty of any
+ * kind, whether express or implied.
+ */
 
 #include <dt-bindings/bus/ti-sysc.h>
 #include <dt-bindings/clock/dm816.h>
@@ -310,6 +314,8 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			interrupts = <70>;
+			dmas = <&edma 58 0 &edma 59 0>;
+			dma-names = "tx", "rx";
 		};
 
 		i2c2: i2c@4802a000 {
@@ -319,6 +325,8 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			interrupts = <71>;
+			dmas = <&edma 60 0 &edma 61 0>;
+			dma-names = "tx", "rx";
 		};
 
 		intc: interrupt-controller@48200000 {
@@ -343,7 +351,7 @@
 			#mbox-cells = <1>;
 			ti,mbox-num-users = <4>;
 			ti,mbox-num-fifos = <12>;
-			mbox_dsp: mbox-dsp {
+			mbox_dsp: mbox_dsp {
 				ti,mbox-tx = <3 0 0>;
 				ti,mbox-rx = <0 0 0>;
 			};
@@ -522,7 +530,7 @@
 			ti,timer-pwm;
 		};
 
-		uart1: serial@48020000 {
+		uart1: uart@48020000 {
 			compatible = "ti,am3352-uart", "ti,omap3-uart";
 			ti,hwmods = "uart1";
 			reg = <0x48020000 0x2000>;
@@ -532,7 +540,7 @@
 			dma-names = "tx", "rx";
 		};
 
-		uart2: serial@48022000 {
+		uart2: uart@48022000 {
 			compatible = "ti,am3352-uart", "ti,omap3-uart";
 			ti,hwmods = "uart2";
 			reg = <0x48022000 0x2000>;
@@ -542,7 +550,7 @@
 			dma-names = "tx", "rx";
 		};
 
-		uart3: serial@48024000 {
+		uart3: uart@48024000 {
 			compatible = "ti,am3352-uart", "ti,omap3-uart";
 			ti,hwmods = "uart3";
 			reg = <0x48024000 0x2000>;
@@ -651,11 +659,8 @@
 				interrupts = <17>;
 				interrupt-names = "glue";
 				#dma-cells = <2>;
-				/* For backwards compatibility: */
 				#dma-channels = <30>;
-				dma-channels = <30>;
 				#dma-requests = <256>;
-				dma-requests = <256>;
 			};
 		};
 

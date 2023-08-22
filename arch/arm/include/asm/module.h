@@ -3,31 +3,30 @@
 #define _ASM_ARM_MODULE_H
 
 #include <asm-generic/module.h>
-#include <asm/unwind.h>
+
+struct unwind_table;
 
 #ifdef CONFIG_ARM_UNWIND
-#define ELF_SECTION_UNWIND 0x70000001
-#endif
-
-#define PLT_ENT_STRIDE		L1_CACHE_BYTES
-#define PLT_ENT_COUNT		(PLT_ENT_STRIDE / sizeof(u32))
-#define PLT_ENT_SIZE		(sizeof(struct plt_entries) / PLT_ENT_COUNT)
-
-struct plt_entries {
-	u32	ldr[PLT_ENT_COUNT];
-	u32	lit[PLT_ENT_COUNT];
+enum {
+	ARM_SEC_INIT,
+	ARM_SEC_DEVINIT,
+	ARM_SEC_CORE,
+	ARM_SEC_EXIT,
+	ARM_SEC_DEVEXIT,
+	ARM_SEC_HOT,
+	ARM_SEC_UNLIKELY,
+	ARM_SEC_MAX,
 };
+#endif
 
 struct mod_plt_sec {
 	struct elf32_shdr	*plt;
-	struct plt_entries	*plt_ent;
 	int			plt_count;
 };
 
 struct mod_arch_specific {
 #ifdef CONFIG_ARM_UNWIND
-	struct list_head unwind_list;
-	struct unwind_table *init_table;
+	struct unwind_table *unwind[ARM_SEC_MAX];
 #endif
 #ifdef CONFIG_ARM_MODULE_PLTS
 	struct mod_plt_sec	core;
@@ -37,11 +36,6 @@ struct mod_arch_specific {
 
 struct module;
 u32 get_module_plt(struct module *mod, unsigned long loc, Elf32_Addr val);
-#ifdef CONFIG_ARM_MODULE_PLTS
-bool in_module_plt(unsigned long loc);
-#else
-static inline bool in_module_plt(unsigned long loc) { return false; }
-#endif
 
 #ifdef CONFIG_THUMB2_KERNEL
 #define HAVE_ARCH_KALLSYMS_SYMBOL_VALUE

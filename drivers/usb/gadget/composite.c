@@ -13,12 +13,9 @@
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/utsname.h>
-#include <linux/bitfield.h>
-#include <linux/uuid.h>
 
 #include <linux/usb/composite.h>
 #include <linux/usb/otg.h>
-#include <linux/usb/webusb.h>
 #include <asm/unaligned.h>
 
 #include "u_os_desc.h"
@@ -161,8 +158,6 @@ int config_ep_by_speed_and_alt(struct usb_gadget *g,
 	int want_comp_desc = 0;
 
 	struct usb_descriptor_header **d_spd; /* cursor for speed desc */
-	struct usb_composite_dev *cdev;
-	bool incomplete_desc = false;
 
 	if (!g || !f || !_ep)
 		return -EIO;
@@ -171,42 +166,27 @@ int config_ep_by_speed_and_alt(struct usb_gadget *g,
 	switch (g->speed) {
 	case USB_SPEED_SUPER_PLUS:
 		if (gadget_is_superspeed_plus(g)) {
-			if (f->ssp_descriptors) {
-				speed_desc = f->ssp_descriptors;
-				want_comp_desc = 1;
-				break;
-			}
-			incomplete_desc = true;
+			speed_desc = f->ssp_descriptors;
+			want_comp_desc = 1;
+			break;
 		}
 		fallthrough;
 	case USB_SPEED_SUPER:
 		if (gadget_is_superspeed(g)) {
-			if (f->ss_descriptors) {
-				speed_desc = f->ss_descriptors;
-				want_comp_desc = 1;
-				break;
-			}
-			incomplete_desc = true;
+			speed_desc = f->ss_descriptors;
+			want_comp_desc = 1;
+			break;
 		}
 		fallthrough;
 	case USB_SPEED_HIGH:
 		if (gadget_is_dualspeed(g)) {
-			if (f->hs_descriptors) {
-				speed_desc = f->hs_descriptors;
-				break;
-			}
-			incomplete_desc = true;
+			speed_desc = f->hs_descriptors;
+			break;
 		}
 		fallthrough;
 	default:
 		speed_desc = f->fs_descriptors;
 	}
-
-	cdev = get_gadget_data(g);
-	if (incomplete_desc)
-		WARNING(cdev,
-			"%s doesn't hold the descriptors for current speed\n",
-			f->name);
 
 	/* find correct alternate setting descriptor */
 	for_each_desc(speed_desc, d_spd, USB_DT_INTERFACE) {
@@ -263,8 +243,12 @@ ep_found:
 			_ep->maxburst = comp_desc->bMaxBurst + 1;
 			break;
 		default:
-			if (comp_desc->bMaxBurst != 0)
+			if (comp_desc->bMaxBurst != 0) {
+				struct usb_composite_dev *cdev;
+
+				cdev = get_gadget_data(g);
 				ERROR(cdev, "ep0 bMaxBurst must be 0\n");
+			}
 			_ep->maxburst = 1;
 			break;
 		}
@@ -497,7 +481,7 @@ static u8 encode_bMaxPower(enum usb_device_speed speed,
 {
 	unsigned val;
 
-	if (c->MaxPower || (c->bmAttributes & USB_CONFIG_ATT_SELFPOWER))
+	if (c->MaxPower)
 		val = c->MaxPower;
 	else
 		val = CONFIG_USB_GADGET_VBUS_DRAW;
@@ -715,16 +699,14 @@ static int bos_desc(struct usb_composite_dev *cdev)
 	 * A SuperSpeed device shall include the USB2.0 extension descriptor
 	 * and shall support LPM when operating in USB2.0 HS mode.
 	 */
-	if (cdev->gadget->lpm_capable) {
-		usb_ext = cdev->req->buf + le16_to_cpu(bos->wTotalLength);
-		bos->bNumDeviceCaps++;
-		le16_add_cpu(&bos->wTotalLength, USB_DT_USB_EXT_CAP_SIZE);
-		usb_ext->bLength = USB_DT_USB_EXT_CAP_SIZE;
-		usb_ext->bDescriptorType = USB_DT_DEVICE_CAPABILITY;
-		usb_ext->bDevCapabilityType = USB_CAP_TYPE_EXT;
-		usb_ext->bmAttributes = cpu_to_le32(USB_LPM_SUPPORT |
-							USB_BESL_SUPPORT | besl);
-	}
+	usb_ext = cdev->req->buf + le16_to_cpu(bos->wTotalLength);
+	bos->bNumDeviceCaps++;
+	le16_add_cpu(&bos->wTotalLength, USB_DT_USB_EXT_CAP_SIZE);
+	usb_ext->bLength = USB_DT_USB_EXT_CAP_SIZE;
+	usb_ext->bDescriptorType = USB_DT_DEVICE_CAPABILITY;
+	usb_ext->bDevCapabilityType = USB_CAP_TYPE_EXT;
+	usb_ext->bmAttributes = cpu_to_le32(USB_LPM_SUPPORT |
+					    USB_BESL_SUPPORT | besl);
 
 	/*
 	 * The Superspeed USB Capability descriptor shall be implemented by all
@@ -752,108 +734,47 @@ static int bos_desc(struct usb_composite_dev *cdev)
 	/* The SuperSpeedPlus USB Device Capability descriptor */
 	if (gadget_is_superspeed_plus(cdev->gadget)) {
 		struct usb_ssp_cap_descriptor *ssp_cap;
-		u8 ssac = 1;
-		u8 ssic;
-		int i;
-
-		if (cdev->gadget->max_ssp_rate == USB_SSP_GEN_2x2)
-			ssac = 3;
-
-		/*
-		 * Paired RX and TX sublink speed attributes share
-		 * the same SSID.
-		 */
-		ssic = (ssac + 1) / 2 - 1;
 
 		ssp_cap = cdev->req->buf + le16_to_cpu(bos->wTotalLength);
 		bos->bNumDeviceCaps++;
 
-		le16_add_cpu(&bos->wTotalLength, USB_DT_USB_SSP_CAP_SIZE(ssac));
-		ssp_cap->bLength = USB_DT_USB_SSP_CAP_SIZE(ssac);
+		/*
+		 * Report typical values.
+		 */
+
+		le16_add_cpu(&bos->wTotalLength, USB_DT_USB_SSP_CAP_SIZE(1));
+		ssp_cap->bLength = USB_DT_USB_SSP_CAP_SIZE(1);
 		ssp_cap->bDescriptorType = USB_DT_DEVICE_CAPABILITY;
 		ssp_cap->bDevCapabilityType = USB_SSP_CAP_TYPE;
 		ssp_cap->bReserved = 0;
 		ssp_cap->wReserved = 0;
 
-		ssp_cap->bmAttributes =
-			cpu_to_le32(FIELD_PREP(USB_SSP_SUBLINK_SPEED_ATTRIBS, ssac) |
-				    FIELD_PREP(USB_SSP_SUBLINK_SPEED_IDS, ssic));
+		/* SSAC = 1 (2 attributes) */
+		ssp_cap->bmAttributes = cpu_to_le32(1);
 
+		/* Min RX/TX Lane Count = 1 */
 		ssp_cap->wFunctionalitySupport =
-			cpu_to_le16(FIELD_PREP(USB_SSP_MIN_SUBLINK_SPEED_ATTRIBUTE_ID, 0) |
-				    FIELD_PREP(USB_SSP_MIN_RX_LANE_COUNT, 1) |
-				    FIELD_PREP(USB_SSP_MIN_TX_LANE_COUNT, 1));
+			cpu_to_le16((1 << 8) | (1 << 12));
 
 		/*
-		 * Use 1 SSID if the gadget supports up to gen2x1 or not
-		 * specified:
-		 * - SSID 0 for symmetric RX/TX sublink speed of 10 Gbps.
-		 *
-		 * Use 1 SSID if the gadget supports up to gen1x2:
-		 * - SSID 0 for symmetric RX/TX sublink speed of 5 Gbps.
-		 *
-		 * Use 2 SSIDs if the gadget supports up to gen2x2:
-		 * - SSID 0 for symmetric RX/TX sublink speed of 5 Gbps.
-		 * - SSID 1 for symmetric RX/TX sublink speed of 10 Gbps.
+		 * bmSublinkSpeedAttr[0]:
+		 *   ST  = Symmetric, RX
+		 *   LSE =  3 (Gbps)
+		 *   LP  =  1 (SuperSpeedPlus)
+		 *   LSM = 10 (10 Gbps)
 		 */
-		for (i = 0; i < ssac + 1; i++) {
-			u8 ssid;
-			u8 mantissa;
-			u8 type;
-
-			ssid = i >> 1;
-
-			if (cdev->gadget->max_ssp_rate == USB_SSP_GEN_2x1 ||
-			    cdev->gadget->max_ssp_rate == USB_SSP_GEN_UNKNOWN)
-				mantissa = 10;
-			else
-				mantissa = 5 << ssid;
-
-			if (i % 2)
-				type = USB_SSP_SUBLINK_SPEED_ST_SYM_TX;
-			else
-				type = USB_SSP_SUBLINK_SPEED_ST_SYM_RX;
-
-			ssp_cap->bmSublinkSpeedAttr[i] =
-				cpu_to_le32(FIELD_PREP(USB_SSP_SUBLINK_SPEED_SSID, ssid) |
-					    FIELD_PREP(USB_SSP_SUBLINK_SPEED_LSE,
-						       USB_SSP_SUBLINK_SPEED_LSE_GBPS) |
-					    FIELD_PREP(USB_SSP_SUBLINK_SPEED_ST, type) |
-					    FIELD_PREP(USB_SSP_SUBLINK_SPEED_LP,
-						       USB_SSP_SUBLINK_SPEED_LP_SSP) |
-					    FIELD_PREP(USB_SSP_SUBLINK_SPEED_LSM, mantissa));
-		}
-	}
-
-	/* The WebUSB Platform Capability descriptor */
-	if (cdev->use_webusb) {
-		struct usb_plat_dev_cap_descriptor *webusb_cap;
-		struct usb_webusb_cap_data *webusb_cap_data;
-		guid_t webusb_uuid = WEBUSB_UUID;
-
-		webusb_cap = cdev->req->buf + le16_to_cpu(bos->wTotalLength);
-		webusb_cap_data = (struct usb_webusb_cap_data *) webusb_cap->CapabilityData;
-		bos->bNumDeviceCaps++;
-		le16_add_cpu(&bos->wTotalLength,
-			USB_DT_USB_PLAT_DEV_CAP_SIZE(USB_WEBUSB_CAP_DATA_SIZE));
-
-		webusb_cap->bLength = USB_DT_USB_PLAT_DEV_CAP_SIZE(USB_WEBUSB_CAP_DATA_SIZE);
-		webusb_cap->bDescriptorType = USB_DT_DEVICE_CAPABILITY;
-		webusb_cap->bDevCapabilityType = USB_PLAT_DEV_CAP_TYPE;
-		webusb_cap->bReserved = 0;
-		export_guid(webusb_cap->UUID, &webusb_uuid);
-
-		if (cdev->bcd_webusb_version != 0)
-			webusb_cap_data->bcdVersion = cpu_to_le16(cdev->bcd_webusb_version);
-		else
-			webusb_cap_data->bcdVersion = WEBUSB_VERSION_1_00;
-
-		webusb_cap_data->bVendorCode = cdev->b_webusb_vendor_code;
-
-		if (strnlen(cdev->landing_page, sizeof(cdev->landing_page)) > 0)
-			webusb_cap_data->iLandingPage = WEBUSB_LANDING_PAGE_PRESENT;
-		else
-			webusb_cap_data->iLandingPage = WEBUSB_LANDING_PAGE_NOT_PRESENT;
+		ssp_cap->bmSublinkSpeedAttr[0] =
+			cpu_to_le32((3 << 4) | (1 << 14) | (0xa << 16));
+		/*
+		 * bmSublinkSpeedAttr[1] =
+		 *   ST  = Symmetric, TX
+		 *   LSE =  3 (Gbps)
+		 *   LP  =  1 (SuperSpeedPlus)
+		 *   LSM = 10 (10 Gbps)
+		 */
+		ssp_cap->bmSublinkSpeedAttr[1] =
+			cpu_to_le32((3 << 4) | (1 << 14) |
+				    (0xa << 16) | (1 << 7));
 	}
 
 	return le16_to_cpu(bos->wTotalLength);
@@ -898,25 +819,24 @@ static int set_config(struct usb_composite_dev *cdev,
 		const struct usb_ctrlrequest *ctrl, unsigned number)
 {
 	struct usb_gadget	*gadget = cdev->gadget;
-	struct usb_configuration *c = NULL, *iter;
+	struct usb_configuration *c = NULL;
 	int			result = -EINVAL;
 	unsigned		power = gadget_is_otg(gadget) ? 8 : 100;
 	int			tmp;
 
 	if (number) {
-		list_for_each_entry(iter, &cdev->configs, list) {
-			if (iter->bConfigurationValue != number)
-				continue;
-			/*
-			 * We disable the FDs of the previous
-			 * configuration only if the new configuration
-			 * is a valid one
-			 */
-			if (cdev->config)
-				reset_config(cdev);
-			c = iter;
-			result = 0;
-			break;
+		list_for_each_entry(c, &cdev->configs, list) {
+			if (c->bConfigurationValue == number) {
+				/*
+				 * We disable the FDs of the previous
+				 * configuration only if the new configuration
+				 * is a valid one
+				 */
+				if (cdev->config)
+					reset_config(cdev);
+				result = 0;
+				break;
+			}
 		}
 		if (result < 0)
 			goto done;
@@ -985,11 +905,7 @@ static int set_config(struct usb_composite_dev *cdev,
 	}
 
 	/* when we return, be sure our power usage is valid */
-	if (c->MaxPower || (c->bmAttributes & USB_CONFIG_ATT_SELFPOWER))
-		power = c->MaxPower;
-	else
-		power = CONFIG_USB_GADGET_VBUS_DRAW;
-
+	power = c->MaxPower ? c->MaxPower : CONFIG_USB_GADGET_VBUS_DRAW;
 	if (gadget->speed < USB_SPEED_SUPER)
 		power = min(power, 500U);
 	else
@@ -1726,20 +1642,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 	u16				w_value = le16_to_cpu(ctrl->wValue);
 	u16				w_length = le16_to_cpu(ctrl->wLength);
 	struct usb_function		*f = NULL;
-	struct usb_function		*iter;
 	u8				endp;
-
-	if (w_length > USB_COMP_EP0_BUFSIZ) {
-		if (ctrl->bRequestType & USB_DIR_IN) {
-			/* Cast away the const, we are going to overwrite on purpose. */
-			__le16 *temp = (__le16 *)&ctrl->wLength;
-
-			*temp = cpu_to_le16(USB_COMP_EP0_BUFSIZ);
-			w_length = USB_COMP_EP0_BUFSIZ;
-		} else {
-			goto done;
-		}
-	}
 
 	/* partial re-init of the response message; the function or the
 	 * gadget might need to intercept e.g. a control-OUT completion
@@ -1779,7 +1682,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 					cdev->desc.bcdUSB = cpu_to_le16(0x0210);
 				}
 			} else {
-				if (gadget->lpm_capable || cdev->use_webusb)
+				if (gadget->lpm_capable)
 					cdev->desc.bcdUSB = cpu_to_le16(0x0201);
 				else
 					cdev->desc.bcdUSB = cpu_to_le16(0x0200);
@@ -1814,7 +1717,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 			break;
 		case USB_DT_BOS:
 			if (gadget_is_superspeed(gadget) ||
-			    gadget->lpm_capable || cdev->use_webusb) {
+			    gadget->lpm_capable) {
 				value = bos_desc(cdev);
 				value = min(w_length, (u16) value);
 			}
@@ -2025,9 +1928,6 @@ unknown:
 				if (w_index != 0x5 || (w_value >> 8))
 					break;
 				interface = w_value & 0xFF;
-				if (interface >= MAX_CONFIG_INTERFACES ||
-				    !os_desc_cfg->interface[interface])
-					break;
 				buf[6] = w_index;
 				count = count_ext_prop(os_desc_cfg,
 					interface);
@@ -2044,52 +1944,6 @@ unknown:
 				}
 				break;
 			}
-
-			goto check_value;
-		}
-
-		/*
-		 * WebUSB URL descriptor handling, following:
-		 * https://wicg.github.io/webusb/#device-requests
-		 */
-		if (cdev->use_webusb &&
-		    ctrl->bRequestType == (USB_DIR_IN | USB_TYPE_VENDOR) &&
-		    w_index == WEBUSB_GET_URL &&
-		    w_value == WEBUSB_LANDING_PAGE_PRESENT &&
-		    ctrl->bRequest == cdev->b_webusb_vendor_code) {
-			unsigned int	landing_page_length;
-			unsigned int	landing_page_offset;
-			struct webusb_url_descriptor *url_descriptor =
-					(struct webusb_url_descriptor *)cdev->req->buf;
-
-			url_descriptor->bDescriptorType = WEBUSB_URL_DESCRIPTOR_TYPE;
-
-			if (strncasecmp(cdev->landing_page, "https://",  8) == 0) {
-				landing_page_offset = 8;
-				url_descriptor->bScheme = WEBUSB_URL_SCHEME_HTTPS;
-			} else if (strncasecmp(cdev->landing_page, "http://", 7) == 0) {
-				landing_page_offset = 7;
-				url_descriptor->bScheme = WEBUSB_URL_SCHEME_HTTP;
-			} else {
-				landing_page_offset = 0;
-				url_descriptor->bScheme = WEBUSB_URL_SCHEME_NONE;
-			}
-
-			landing_page_length = strnlen(cdev->landing_page,
-				sizeof(url_descriptor->URL)
-				- WEBUSB_URL_DESCRIPTOR_HEADER_LENGTH + landing_page_offset);
-
-			if (w_length < WEBUSB_URL_DESCRIPTOR_HEADER_LENGTH + landing_page_length)
-				landing_page_length = w_length
-				- WEBUSB_URL_DESCRIPTOR_HEADER_LENGTH + landing_page_offset;
-
-			memcpy(url_descriptor->URL,
-				cdev->landing_page + landing_page_offset,
-				landing_page_length - landing_page_offset);
-			url_descriptor->bLength = landing_page_length
-				- landing_page_offset + WEBUSB_URL_DESCRIPTOR_HEADER_LENGTH;
-
-			value = url_descriptor->bLength;
 
 			goto check_value;
 		}
@@ -2129,12 +1983,12 @@ unknown:
 			if (!cdev->config)
 				break;
 			endp = ((w_index & 0x80) >> 3) | (w_index & 0x0f);
-			list_for_each_entry(iter, &cdev->config->functions, list) {
-				if (test_bit(endp, iter->endpoints)) {
-					f = iter;
+			list_for_each_entry(f, &cdev->config->functions, list) {
+				if (test_bit(endp, f->endpoints))
 					break;
-				}
 			}
+			if (&f->list == &cdev->config->functions)
+				f = NULL;
 			break;
 		}
 try_fun_setup:
@@ -2188,7 +2042,7 @@ done:
 	return value;
 }
 
-static void __composite_disconnect(struct usb_gadget *gadget)
+void composite_disconnect(struct usb_gadget *gadget)
 {
 	struct usb_composite_dev	*cdev = get_gadget_data(gadget);
 	unsigned long			flags;
@@ -2203,23 +2057,6 @@ static void __composite_disconnect(struct usb_gadget *gadget)
 	if (cdev->driver->disconnect)
 		cdev->driver->disconnect(cdev);
 	spin_unlock_irqrestore(&cdev->lock, flags);
-}
-
-void composite_disconnect(struct usb_gadget *gadget)
-{
-	usb_gadget_vbus_draw(gadget, 0);
-	__composite_disconnect(gadget);
-}
-
-void composite_reset(struct usb_gadget *gadget)
-{
-	/*
-	 * Section 1.4.13 Standard Downstream Port of the USB battery charging
-	 * specification v1.2 states that a device connected on a SDP shall only
-	 * draw at max 100mA while in a connected, but unconfigured state.
-	 */
-	usb_gadget_vbus_draw(gadget, 100);
-	__composite_disconnect(gadget);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -2320,7 +2157,7 @@ int composite_dev_prepare(struct usb_composite_driver *composite,
 	if (!cdev->req)
 		return -ENOMEM;
 
-	cdev->req->buf = kzalloc(USB_COMP_EP0_BUFSIZ, GFP_KERNEL);
+	cdev->req->buf = kmalloc(USB_COMP_EP0_BUFSIZ, GFP_KERNEL);
 	if (!cdev->req->buf)
 		goto fail;
 
@@ -2542,7 +2379,7 @@ static const struct usb_gadget_driver composite_driver_template = {
 	.unbind		= composite_unbind,
 
 	.setup		= composite_setup,
-	.reset		= composite_reset,
+	.reset		= composite_disconnect,
 	.disconnect	= composite_disconnect,
 
 	.suspend	= composite_suspend,
@@ -2586,7 +2423,7 @@ int usb_composite_probe(struct usb_composite_driver *driver)
 	gadget_driver->driver.name = driver->name;
 	gadget_driver->max_speed = driver->max_speed;
 
-	return usb_gadget_register_driver(gadget_driver);
+	return usb_gadget_probe_driver(gadget_driver);
 }
 EXPORT_SYMBOL_GPL(usb_composite_probe);
 

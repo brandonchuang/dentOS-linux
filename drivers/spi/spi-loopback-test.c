@@ -71,11 +71,6 @@ module_param(check_ranges, int, 0644);
 MODULE_PARM_DESC(check_ranges,
 		 "checks rx_buffer pattern are valid");
 
-static unsigned int delay_ms = 100;
-module_param(delay_ms, uint, 0644);
-MODULE_PARM_DESC(delay_ms,
-		 "delay between tests, in milliseconds (default: 100)");
-
 /* the actual tests to execute */
 static struct spi_test spi_tests[] = {
 	{
@@ -318,33 +313,6 @@ static struct spi_test spi_tests[] = {
 			},
 		},
 	},
-	{
-		.description	= "three tx+rx transfers with overlapping cache lines",
-		.fill_option	= FILL_COUNT_8,
-		/*
-		 * This should be large enough for the controller driver to
-		 * choose to transfer it with DMA.
-		 */
-		.iterate_len    = { 512, -1 },
-		.iterate_transfer_mask = BIT(1),
-		.transfer_count = 3,
-		.transfers		= {
-			{
-				.len = 1,
-				.tx_buf = TX(0),
-				.rx_buf = RX(0),
-			},
-			{
-				.tx_buf = TX(1),
-				.rx_buf = RX(1),
-			},
-			{
-				.len = 1,
-				.tx_buf = TX(513),
-				.rx_buf = RX(513),
-			},
-		},
-	},
 
 	{ /* end of tests sequence */ }
 };
@@ -486,8 +454,7 @@ struct rx_ranges {
 	u8 *end;
 };
 
-static int rx_ranges_cmp(void *priv, const struct list_head *a,
-			 const struct list_head *b)
+static int rx_ranges_cmp(void *priv, struct list_head *a, struct list_head *b)
 {
 	struct rx_ranges *rx_a = list_entry(a, struct rx_ranges, list);
 	struct rx_ranges *rx_b = list_entry(b, struct rx_ranges, list);
@@ -907,7 +874,7 @@ static int spi_test_run_iter(struct spi_device *spi,
 		test.transfers[i].len = len;
 		if (test.transfers[i].tx_buf)
 			test.transfers[i].tx_buf += tx_off;
-		if (test.transfers[i].rx_buf)
+		if (test.transfers[i].tx_buf)
 			test.transfers[i].rx_buf += rx_off;
 	}
 
@@ -1103,8 +1070,7 @@ int spi_test_run_tests(struct spi_device *spi,
 		 * detect the individual tests when using a logic analyzer
 		 * we also add scheduling to avoid potential spi_timeouts...
 		 */
-		if (delay_ms)
-			mdelay(delay_ms);
+		mdelay(100);
 		schedule();
 	}
 

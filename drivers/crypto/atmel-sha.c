@@ -33,8 +33,7 @@
 #include <linux/crypto.h>
 #include <crypto/scatterwalk.h>
 #include <crypto/algapi.h>
-#include <crypto/sha1.h>
-#include <crypto/sha2.h>
+#include <crypto/sha.h>
 #include <crypto/hash.h>
 #include <crypto/internal/hash.h>
 #include "atmel-sha-regs.h"
@@ -292,7 +291,7 @@ static inline int atmel_sha_complete(struct atmel_sha_dev *dd, int err)
 	clk_disable(dd->iclk);
 
 	if ((dd->is_async || dd->force_complete) && req->base.complete)
-		ahash_request_complete(req, err);
+		req->base.complete(&req->base, err);
 
 	/* handle new request */
 	tasklet_schedule(&dd->queue_task);
@@ -434,7 +433,7 @@ static int atmel_sha_init(struct ahash_request *req)
 
 	ctx->flags = 0;
 
-	dev_dbg(dd->dev, "init: digest size: %u\n",
+	dev_dbg(dd->dev, "init: digest size: %d\n",
 		crypto_ahash_digestsize(tfm));
 
 	switch (crypto_ahash_digestsize(tfm)) {
@@ -460,6 +459,7 @@ static int atmel_sha_init(struct ahash_request *req)
 		break;
 	default:
 		return -EINVAL;
+		break;
 	}
 
 	ctx->bufcnt = 0;
@@ -1080,7 +1080,7 @@ static int atmel_sha_handle_queue(struct atmel_sha_dev *dd,
 		return ret;
 
 	if (backlog)
-		crypto_request_complete(backlog, -EINPROGRESS);
+		backlog->complete(backlog, -EINPROGRESS);
 
 	ctx = crypto_tfm_ctx(async_req->tfm);
 
@@ -1102,7 +1102,7 @@ static int atmel_sha_start(struct atmel_sha_dev *dd)
 	struct atmel_sha_reqctx *ctx = ahash_request_ctx(req);
 	int err;
 
-	dev_dbg(dd->dev, "handling new req, op: %lu, nbytes: %u\n",
+	dev_dbg(dd->dev, "handling new req, op: %lu, nbytes: %d\n",
 						ctx->op, req->nbytes);
 
 	err = atmel_sha_hw_init(dd);
@@ -2099,9 +2099,10 @@ struct atmel_sha_authenc_reqctx {
 	unsigned int		digestlen;
 };
 
-static void atmel_sha_authenc_complete(void *data, int err)
+static void atmel_sha_authenc_complete(struct crypto_async_request *areq,
+				       int err)
 {
-	struct ahash_request *req = data;
+	struct ahash_request *req = areq->data;
 	struct atmel_sha_authenc_reqctx *authctx  = ahash_request_ctx(req);
 
 	authctx->cb(authctx->aes_dev, err, authctx->base.dd->is_async);
@@ -2507,8 +2508,6 @@ static void atmel_sha_get_cap(struct atmel_sha_dev *dd)
 
 	/* keep only major version number */
 	switch (dd->hw_version & 0xff0) {
-	case 0x700:
-	case 0x600:
 	case 0x510:
 		dd->caps.has_dma = 1;
 		dd->caps.has_dualbuff = 1;
@@ -2666,8 +2665,11 @@ err_tasklet_kill:
 
 static int atmel_sha_remove(struct platform_device *pdev)
 {
-	struct atmel_sha_dev *sha_dd = platform_get_drvdata(pdev);
+	struct atmel_sha_dev *sha_dd;
 
+	sha_dd = platform_get_drvdata(pdev);
+	if (!sha_dd)
+		return -ENODEV;
 	spin_lock(&atmel_sha.lock);
 	list_del(&sha_dd->list);
 	spin_unlock(&atmel_sha.lock);

@@ -15,8 +15,6 @@
 #include <drm/drm_crtc.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_fourcc.h>
-#include <drm/drm_framebuffer.h>
-#include <drm/drm_prime.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/exynos_drm.h>
 
@@ -41,16 +39,31 @@ static int exynos_drm_fb_mmap(struct fb_info *info,
 	struct drm_fb_helper *helper = info->par;
 	struct exynos_drm_fbdev *exynos_fbd = to_exynos_fbdev(helper);
 	struct exynos_drm_gem *exynos_gem = exynos_fbd->exynos_gem;
+	unsigned long vm_size;
+	int ret;
 
-	return drm_gem_prime_mmap(&exynos_gem->base, vma);
+	vma->vm_flags |= VM_IO | VM_DONTEXPAND | VM_DONTDUMP;
+
+	vm_size = vma->vm_end - vma->vm_start;
+
+	if (vm_size > exynos_gem->size)
+		return -EINVAL;
+
+	ret = dma_mmap_attrs(to_dma_dev(helper->dev), vma, exynos_gem->cookie,
+			     exynos_gem->dma_addr, exynos_gem->size,
+			     exynos_gem->dma_attrs);
+	if (ret < 0) {
+		DRM_DEV_ERROR(to_dma_dev(helper->dev), "failed to mmap.\n");
+		return ret;
+	}
+
+	return 0;
 }
 
 static const struct fb_ops exynos_drm_fb_ops = {
 	.owner		= THIS_MODULE,
 	DRM_FB_HELPER_DEFAULT_OPS,
 	.fb_mmap        = exynos_drm_fb_mmap,
-	.fb_read	= drm_fb_helper_cfb_read,
-	.fb_write	= drm_fb_helper_cfb_write,
 	.fb_fillrect	= drm_fb_helper_cfb_fillrect,
 	.fb_copyarea	= drm_fb_helper_cfb_copyarea,
 	.fb_imageblit	= drm_fb_helper_cfb_imageblit,
@@ -65,7 +78,7 @@ static int exynos_drm_fbdev_update(struct drm_fb_helper *helper,
 	unsigned int size = fb->width * fb->height * fb->format->cpp[0];
 	unsigned long offset;
 
-	fbi = drm_fb_helper_alloc_info(helper);
+	fbi = drm_fb_helper_alloc_fbi(helper);
 	if (IS_ERR(fbi)) {
 		DRM_DEV_ERROR(to_dma_dev(helper->dev),
 			      "failed to allocate fb info.\n");
@@ -163,7 +176,7 @@ int exynos_drm_fbdev_init(struct drm_device *dev)
 
 	private->fb_helper = helper = &fbdev->drm_fb_helper;
 
-	drm_fb_helper_prepare(dev, helper, PREFERRED_BPP, &exynos_drm_fb_helper_funcs);
+	drm_fb_helper_prepare(dev, helper, &exynos_drm_fb_helper_funcs);
 
 	ret = drm_fb_helper_init(dev, helper);
 	if (ret < 0) {
@@ -172,7 +185,7 @@ int exynos_drm_fbdev_init(struct drm_device *dev)
 		goto err_init;
 	}
 
-	ret = drm_fb_helper_initial_config(helper);
+	ret = drm_fb_helper_initial_config(helper, PREFERRED_BPP);
 	if (ret < 0) {
 		DRM_DEV_ERROR(dev->dev,
 			      "failed to set up hw configuration.\n");
@@ -183,8 +196,8 @@ int exynos_drm_fbdev_init(struct drm_device *dev)
 
 err_setup:
 	drm_fb_helper_fini(helper);
+
 err_init:
-	drm_fb_helper_unprepare(helper);
 	private->fb_helper = NULL;
 	kfree(fbdev);
 
@@ -203,7 +216,7 @@ static void exynos_drm_fbdev_destroy(struct drm_device *dev,
 			drm_framebuffer_remove(fb);
 	}
 
-	drm_fb_helper_unregister_info(fb_helper);
+	drm_fb_helper_unregister_fbi(fb_helper);
 
 	drm_fb_helper_fini(fb_helper);
 }
@@ -219,7 +232,6 @@ void exynos_drm_fbdev_fini(struct drm_device *dev)
 	fbdev = to_exynos_fbdev(private->fb_helper);
 
 	exynos_drm_fbdev_destroy(dev, private->fb_helper);
-	drm_fb_helper_unprepare(private->fb_helper);
 	kfree(fbdev);
 	private->fb_helper = NULL;
 }

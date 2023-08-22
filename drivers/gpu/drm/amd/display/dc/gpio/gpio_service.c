@@ -27,6 +27,8 @@
  * Pre-requisites: headers required by header of this unit
  */
 
+#include <linux/slab.h>
+
 #include "dm_services.h"
 #include "include/gpio_interface.h"
 #include "include/gpio_service_interface.h"
@@ -51,8 +53,8 @@
  */
 
 struct gpio_service *dal_gpio_service_create(
-	enum dce_version dce_version,
-	enum dce_environment dce_environment,
+	enum dce_version dce_version_major,
+	enum dce_version dce_version_minor,
 	struct dc_context *ctx)
 {
 	struct gpio_service *service;
@@ -65,14 +67,14 @@ struct gpio_service *dal_gpio_service_create(
 		return NULL;
 	}
 
-	if (!dal_hw_translate_init(&service->translate, dce_version,
-			dce_environment)) {
+	if (!dal_hw_translate_init(&service->translate, dce_version_major,
+			dce_version_minor)) {
 		BREAK_TO_DEBUGGER();
 		goto failure_1;
 	}
 
-	if (!dal_hw_factory_init(&service->factory, dce_version,
-			dce_environment)) {
+	if (!dal_hw_factory_init(&service->factory, dce_version_major,
+			dce_version_minor)) {
 		BREAK_TO_DEBUGGER();
 		goto failure_1;
 	}
@@ -645,9 +647,7 @@ enum gpio_result dal_ddc_set_config(
 void dal_ddc_close(
 	struct ddc *ddc)
 {
-	if (ddc != NULL) {
-		dal_gpio_close(ddc->pin_clock);
-		dal_gpio_close(ddc->pin_data);
-	}
+	dal_gpio_close(ddc->pin_clock);
+	dal_gpio_close(ddc->pin_data);
 }
 

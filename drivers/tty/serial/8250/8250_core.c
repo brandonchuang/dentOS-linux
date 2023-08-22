@@ -23,7 +23,6 @@
 #include <linux/sysrq.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
-#include <linux/pm_runtime.h>
 #include <linux/tty.h>
 #include <linux/ratelimit.h>
 #include <linux/tty_flip.h>
@@ -32,8 +31,8 @@
 #include <linux/nmi.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
-#include <linux/string_helpers.h>
 #include <linux/uaccess.h>
+#include <linux/pm_runtime.h>
 #include <linux/io.h>
 #ifdef CONFIG_SPARC
 #include <linux/sunserialcore.h>
@@ -173,6 +172,7 @@ static void serial_do_unlink(struct irq_info *i, struct uart_8250_port *up)
 static int serial_link_irq_chain(struct uart_8250_port *up)
 {
 	struct hlist_head *h;
+	struct hlist_node *n;
 	struct irq_info *i;
 	int ret;
 
@@ -180,11 +180,13 @@ static int serial_link_irq_chain(struct uart_8250_port *up)
 
 	h = &irq_lists[up->port.irq % NR_IRQ_HASH];
 
-	hlist_for_each_entry(i, h, node)
+	hlist_for_each(n, h) {
+		i = hlist_entry(n, struct irq_info, node);
 		if (i->irq == up->port.irq)
 			break;
+	}
 
-	if (i == NULL) {
+	if (n == NULL) {
 		i = kzalloc(sizeof(struct irq_info), GFP_KERNEL);
 		if (i == NULL) {
 			mutex_unlock(&hash_mutex);
@@ -218,18 +220,25 @@ static int serial_link_irq_chain(struct uart_8250_port *up)
 
 static void serial_unlink_irq_chain(struct uart_8250_port *up)
 {
+	/*
+	 * yes, some broken gcc emit "warning: 'i' may be used uninitialized"
+	 * but no, we are not going to take a patch that assigns NULL below.
+	 */
 	struct irq_info *i;
+	struct hlist_node *n;
 	struct hlist_head *h;
 
 	mutex_lock(&hash_mutex);
 
 	h = &irq_lists[up->port.irq % NR_IRQ_HASH];
 
-	hlist_for_each_entry(i, h, node)
+	hlist_for_each(n, h) {
+		i = hlist_entry(n, struct irq_info, node);
 		if (i->irq == up->port.irq)
 			break;
+	}
 
-	BUG_ON(i == NULL);
+	BUG_ON(n == NULL);
 	BUG_ON(i->head == NULL);
 
 	if (list_empty(i->head))
@@ -278,7 +287,8 @@ static void serial8250_backup_timeout(struct timer_list *t)
 	 * the "Diva" UART used on the management processor on many HP
 	 * ia64 and parisc boxes.
 	 */
-	lsr = serial_lsr_in(up);
+	lsr = serial_in(up, UART_LSR);
+	up->lsr_saved_flags |= lsr & LSR_SAVE_FLAGS;
 	if ((iir & UART_IIR_NO_INT) && (up->ier & UART_IER_THRI) &&
 	    (!uart_circ_empty(&up->port.state->xmit) || up->port.x_char) &&
 	    (lsr & UART_LSR_THRE)) {
@@ -299,9 +309,10 @@ static void serial8250_backup_timeout(struct timer_list *t)
 		jiffies + uart_poll_timeout(&up->port) + HZ / 5);
 }
 
-static void univ8250_setup_timer(struct uart_8250_port *up)
+static int univ8250_setup_irq(struct uart_8250_port *up)
 {
 	struct uart_port *port = &up->port;
+	int retval = 0;
 
 	/*
 	 * The above check will only give an accurate result the first time
@@ -320,18 +331,12 @@ static void univ8250_setup_timer(struct uart_8250_port *up)
 	 * hardware interrupt, we use a timer-based system.  The original
 	 * driver used to do this with IRQ0.
 	 */
-	if (!port->irq)
+	if (!port->irq) {
 		mod_timer(&up->timer, jiffies + uart_poll_timeout(port));
-}
+	} else
+		retval = serial_link_irq_chain(up);
 
-static int univ8250_setup_irq(struct uart_8250_port *up)
-{
-	struct uart_port *port = &up->port;
-
-	if (port->irq)
-		return serial_link_irq_chain(up);
-
-	return 0;
+	return retval;
 }
 
 static void univ8250_release_irq(struct uart_8250_port *up)
@@ -387,7 +392,6 @@ static struct uart_ops univ8250_port_ops;
 static const struct uart_8250_ops univ8250_driver_ops = {
 	.setup_irq	= univ8250_setup_irq,
 	.release_irq	= univ8250_release_irq,
-	.setup_timer	= univ8250_setup_timer,
 };
 
 static struct uart_8250_port serial8250_ports[UART_NR];
@@ -515,10 +519,11 @@ static void __init serial8250_isa_init_ports(void)
 
 		up->ops = &univ8250_driver_ops;
 
-		if (IS_ENABLED(CONFIG_ALPHA_JENSEN) ||
-		    (IS_ENABLED(CONFIG_ALPHA_GENERIC) && alpha_jensen()))
-			port->set_mctrl = alpha_jensen_set_mctrl;
-
+		/*
+		 * ALPHA_KLUDGE_MCR needs to be killed.
+		 */
+		up->mcr_mask = ~ALPHA_KLUDGE_MCR;
+		up->mcr_force = ALPHA_KLUDGE_MCR;
 		serial8250_set_defaults(up);
 	}
 
@@ -565,9 +570,6 @@ serial8250_register_ports(struct uart_driver *drv, struct device *dev)
 			continue;
 
 		up->port.dev = dev;
-
-		if (uart_console_registered(&up->port))
-			pm_runtime_get_sync(up->port.dev);
 
 		serial8250_apply_quirks(up);
 		uart_add_one_port(drv, &up->port);
@@ -760,7 +762,6 @@ void serial8250_suspend_port(int line)
 	if (!console_suspend_enabled && uart_console(port) &&
 	    port->type != PORT_8250) {
 		unsigned char canary = 0xa5;
-
 		serial_out(up, UART_SCR, canary);
 		if (serial_in(up, UART_SCR) == canary)
 			up->canary = canary;
@@ -914,7 +915,7 @@ static struct platform_device *serial8250_isa_devs;
  */
 static DEFINE_MUTEX(serial_mutex);
 
-static struct uart_8250_port *serial8250_find_match_or_unused(const struct uart_port *port)
+static struct uart_8250_port *serial8250_find_match_or_unused(struct uart_port *port)
 {
 	int i;
 
@@ -979,7 +980,7 @@ static void serial_8250_overrun_backoff_work(struct work_struct *work)
  *
  *	On success the port is ready to use and the line number is returned.
  */
-int serial8250_register_8250_port(const struct uart_8250_port *up)
+int serial8250_register_8250_port(struct uart_8250_port *up)
 {
 	struct uart_8250_port *uart;
 	int ret = -ENOSPC;
@@ -1014,11 +1015,9 @@ int serial8250_register_8250_port(const struct uart_8250_port *up)
 		uart->port.throttle	= up->port.throttle;
 		uart->port.unthrottle	= up->port.unthrottle;
 		uart->port.rs485_config	= up->port.rs485_config;
-		uart->port.rs485_supported = up->port.rs485_supported;
 		uart->port.rs485	= up->port.rs485;
 		uart->rs485_start_tx	= up->rs485_start_tx;
 		uart->rs485_stop_tx	= up->rs485_stop_tx;
-		uart->lsr_save_mask	= up->lsr_save_mask;
 		uart->dma		= up->dma;
 
 		/* Take tx_loadsz from fifosize if it wasn't set separately */
@@ -1106,9 +1105,6 @@ int serial8250_register_8250_port(const struct uart_8250_port *up)
 			ret = 0;
 		}
 
-		if (!uart->lsr_save_mask)
-			uart->lsr_save_mask = LSR_SAVE_FLAGS;	/* Use default LSR mask */
-
 		/* Initialise interrupt backoff work if required */
 		if (up->overrun_backoff_time_ms > 0) {
 			uart->overrun_backoff_time_ms =
@@ -1176,8 +1172,8 @@ static int __init serial8250_init(void)
 
 	serial8250_isa_init_ports();
 
-	pr_info("Serial: 8250/16550 driver, %d ports, IRQ sharing %s\n",
-		nr_uarts, str_enabled_disabled(share_irqs));
+	pr_info("Serial: 8250/16550 driver, %d ports, IRQ sharing %sabled\n",
+		nr_uarts, share_irqs ? "en" : "dis");
 
 #ifdef CONFIG_SPARC
 	ret = sunserial_register_minors(&serial8250_reg, UART_NR);

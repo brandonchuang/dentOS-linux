@@ -21,10 +21,10 @@
 #include <net/ip.h>
 
 struct nft_nat {
-	u8			sreg_addr_min;
-	u8			sreg_addr_max;
-	u8			sreg_proto_min;
-	u8			sreg_proto_max;
+	enum nft_registers      sreg_addr_min:8;
+	enum nft_registers      sreg_addr_max:8;
+	enum nft_registers      sreg_proto_min:8;
+	enum nft_registers      sreg_proto_max:8;
 	enum nf_nat_manip_type  type:8;
 	u8			family;
 	u16			flags;
@@ -201,22 +201,23 @@ static int nft_nat_init(const struct nft_ctx *ctx, const struct nft_expr *expr,
 		alen = sizeof_field(struct nf_nat_range, min_addr.ip6);
 		break;
 	default:
-		if (tb[NFTA_NAT_REG_ADDR_MIN])
-			return -EAFNOSUPPORT;
-		break;
+		return -EAFNOSUPPORT;
 	}
 	priv->family = family;
 
 	if (tb[NFTA_NAT_REG_ADDR_MIN]) {
-		err = nft_parse_register_load(tb[NFTA_NAT_REG_ADDR_MIN],
-					      &priv->sreg_addr_min, alen);
+		priv->sreg_addr_min =
+			nft_parse_register(tb[NFTA_NAT_REG_ADDR_MIN]);
+		err = nft_validate_register_load(priv->sreg_addr_min, alen);
 		if (err < 0)
 			return err;
 
 		if (tb[NFTA_NAT_REG_ADDR_MAX]) {
-			err = nft_parse_register_load(tb[NFTA_NAT_REG_ADDR_MAX],
-						      &priv->sreg_addr_max,
-						      alen);
+			priv->sreg_addr_max =
+				nft_parse_register(tb[NFTA_NAT_REG_ADDR_MAX]);
+
+			err = nft_validate_register_load(priv->sreg_addr_max,
+							 alen);
 			if (err < 0)
 				return err;
 		} else {
@@ -226,17 +227,21 @@ static int nft_nat_init(const struct nft_ctx *ctx, const struct nft_expr *expr,
 		priv->flags |= NF_NAT_RANGE_MAP_IPS;
 	}
 
-	plen = sizeof_field(struct nf_nat_range, min_proto.all);
+	plen = sizeof_field(struct nf_nat_range, min_addr.all);
 	if (tb[NFTA_NAT_REG_PROTO_MIN]) {
-		err = nft_parse_register_load(tb[NFTA_NAT_REG_PROTO_MIN],
-					      &priv->sreg_proto_min, plen);
+		priv->sreg_proto_min =
+			nft_parse_register(tb[NFTA_NAT_REG_PROTO_MIN]);
+
+		err = nft_validate_register_load(priv->sreg_proto_min, plen);
 		if (err < 0)
 			return err;
 
 		if (tb[NFTA_NAT_REG_PROTO_MAX]) {
-			err = nft_parse_register_load(tb[NFTA_NAT_REG_PROTO_MAX],
-						      &priv->sreg_proto_max,
-						      plen);
+			priv->sreg_proto_max =
+				nft_parse_register(tb[NFTA_NAT_REG_PROTO_MAX]);
+
+			err = nft_validate_register_load(priv->sreg_proto_max,
+							 plen);
 			if (err < 0)
 				return err;
 		} else {
@@ -255,8 +260,7 @@ static int nft_nat_init(const struct nft_ctx *ctx, const struct nft_expr *expr,
 	return nf_ct_netns_get(ctx->net, family);
 }
 
-static int nft_nat_dump(struct sk_buff *skb,
-			const struct nft_expr *expr, bool reset)
+static int nft_nat_dump(struct sk_buff *skb, const struct nft_expr *expr)
 {
 	const struct nft_nat *priv = nft_expr_priv(expr);
 
@@ -318,7 +322,6 @@ static const struct nft_expr_ops nft_nat_ops = {
 	.destroy        = nft_nat_destroy,
 	.dump           = nft_nat_dump,
 	.validate	= nft_nat_validate,
-	.reduce		= NFT_REDUCE_READONLY,
 };
 
 static struct nft_expr_type nft_nat_type __read_mostly = {
@@ -336,8 +339,7 @@ static void nft_nat_inet_eval(const struct nft_expr *expr,
 {
 	const struct nft_nat *priv = nft_expr_priv(expr);
 
-	if (priv->family == nft_pf(pkt) ||
-	    priv->family == NFPROTO_INET)
+	if (priv->family == nft_pf(pkt))
 		nft_nat_eval(expr, regs, pkt);
 }
 
@@ -349,7 +351,6 @@ static const struct nft_expr_ops nft_nat_inet_ops = {
 	.destroy        = nft_nat_destroy,
 	.dump           = nft_nat_dump,
 	.validate	= nft_nat_validate,
-	.reduce		= NFT_REDUCE_READONLY,
 };
 
 static struct nft_expr_type nft_inet_nat_type __read_mostly = {

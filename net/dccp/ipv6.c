@@ -27,20 +27,13 @@
 #include <net/ip6_checksum.h>
 #include <net/xfrm.h>
 #include <net/secure_seq.h>
-#include <net/netns/generic.h>
 #include <net/sock.h>
 
 #include "dccp.h"
 #include "ipv6.h"
 #include "feat.h"
 
-struct dccp_v6_pernet {
-	struct sock *v6_ctl_sk;
-};
-
-static unsigned int dccp_v6_pernet_id __read_mostly;
-
-/* The per-net v6_ctl_sk is used for sending RSTs and ACKs */
+/* The per-net dccp.v6_ctl_sk is used for sending RSTs and ACKs */
 
 static const struct inet_connection_sock_af_ops dccp_ipv6_mapped;
 static const struct inet_connection_sock_af_ops dccp_ipv6_af_ops;
@@ -172,7 +165,7 @@ static int dccp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 			 * Wake people up to see the error
 			 * (see connect in sock.c)
 			 */
-			sk_error_report(sk);
+			sk->sk_error_report(sk);
 			dccp_done(sk);
 		} else
 			sk->sk_err_soft = err;
@@ -181,7 +174,7 @@ static int dccp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 
 	if (!sock_owned_by_user(sk) && np->recverr) {
 		sk->sk_err = err;
-		sk_error_report(sk);
+		sk->sk_error_report(sk);
 	} else
 		sk->sk_err_soft = err;
 
@@ -210,7 +203,7 @@ static int dccp_v6_send_response(const struct sock *sk, struct request_sock *req
 	fl6.flowi6_oif = ireq->ir_iif;
 	fl6.fl6_dport = ireq->ir_rmt_port;
 	fl6.fl6_sport = htons(ireq->ir_num);
-	security_req_classify_flow(req, flowi6_to_flowi_common(&fl6));
+	security_req_classify_flow(req, flowi6_to_flowi(&fl6));
 
 
 	rcu_read_lock();
@@ -261,8 +254,7 @@ static void dccp_v6_ctl_send_reset(const struct sock *sk, struct sk_buff *rxskb)
 	struct sk_buff *skb;
 	struct flowi6 fl6;
 	struct net *net = dev_net(skb_dst(rxskb)->dev);
-	struct dccp_v6_pernet *pn;
-	struct sock *ctl_sk;
+	struct sock *ctl_sk = net->dccp.v6_ctl_sk;
 	struct dst_entry *dst;
 
 	if (dccp_hdr(rxskb)->dccph_type == DCCP_PKT_RESET)
@@ -271,8 +263,6 @@ static void dccp_v6_ctl_send_reset(const struct sock *sk, struct sk_buff *rxskb)
 	if (!ipv6_unicast_destination(rxskb))
 		return;
 
-	pn = net_generic(net, dccp_v6_pernet_id);
-	ctl_sk = pn->v6_ctl_sk;
 	skb = dccp_ctl_make_reset(ctl_sk, rxskb);
 	if (skb == NULL)
 		return;
@@ -289,7 +279,7 @@ static void dccp_v6_ctl_send_reset(const struct sock *sk, struct sk_buff *rxskb)
 	fl6.flowi6_oif = inet6_iif(rxskb);
 	fl6.fl6_dport = dccp_hdr(skb)->dccph_dport;
 	fl6.fl6_sport = dccp_hdr(skb)->dccph_sport;
-	security_skb_classify_flow(rxskb, flowi6_to_flowi_common(&fl6));
+	security_skb_classify_flow(rxskb, flowi6_to_flowi(&fl6));
 
 	/* sk = NULL, but it is safe for now. RST socket required. */
 	dst = ip6_dst_lookup_flow(sock_net(ctl_sk), ctl_sk, &fl6, NULL);
@@ -374,10 +364,10 @@ static int dccp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 		refcount_inc(&skb->users);
 		ireq->pktopts = skb;
 	}
-	ireq->ir_iif = READ_ONCE(sk->sk_bound_dev_if);
+	ireq->ir_iif = sk->sk_bound_dev_if;
 
 	/* So that link locals have meaning */
-	if (!ireq->ir_iif &&
+	if (!sk->sk_bound_dev_if &&
 	    ipv6_addr_type(&ireq->ir_v6_rmt_addr) & IPV6_ADDR_LINKLOCAL)
 		ireq->ir_iif = inet6_iif(skb);
 
@@ -551,9 +541,11 @@ static struct sock *dccp_v6_request_recv_sock(const struct sock *sk,
 	*own_req = inet_ehash_nolisten(newsk, req_to_sk(req_unhash), NULL);
 	/* Clone pktoptions received with SYN, if we own the req */
 	if (*own_req && ireq->pktopts) {
-		newnp->pktoptions = skb_clone_and_charge_r(ireq->pktopts, newsk);
+		newnp->pktoptions = skb_clone(ireq->pktopts, GFP_ATOMIC);
 		consume_skb(ireq->pktopts);
 		ireq->pktopts = NULL;
+		if (newnp->pktoptions)
+			skb_set_owner_r(newnp->pktoptions, newsk);
 	}
 
 	return newsk;
@@ -613,7 +605,7 @@ static int dccp_v6_do_rcv(struct sock *sk, struct sk_buff *skb)
 					       --ANK (980728)
 	 */
 	if (np->rxopt.all)
-		opt_skb = skb_clone_and_charge_r(skb, sk);
+		opt_skb = skb_clone(skb, GFP_ATOMIC);
 
 	if (sk->sk_state == DCCP_OPEN) { /* Fast path */
 		if (dccp_rcv_established(sk, skb, dccp_hdr(skb), skb->len))
@@ -677,6 +669,7 @@ ipv6_pktoptions:
 			np->flow_label = ip6_flowlabel(ipv6_hdr(opt_skb));
 		if (ipv6_opt_accepted(sk, opt_skb,
 				      &DCCP_SKB_CB(opt_skb)->header.h6)) {
+			skb_set_owner_r(opt_skb, sk);
 			memmove(IP6CB(opt_skb),
 				&DCCP_SKB_CB(opt_skb)->header.h6,
 				sizeof(struct inet6_skb_parm));
@@ -889,7 +882,7 @@ static int dccp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 
 		SOCK_DEBUG(sk, "connect: ipv4 mapped\n");
 
-		if (ipv6_only_sock(sk))
+		if (__ipv6_only_sock(sk))
 			return -ENETUNREACH;
 
 		sin.sin_family = AF_INET;
@@ -919,7 +912,7 @@ static int dccp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 	fl6.flowi6_oif = sk->sk_bound_dev_if;
 	fl6.fl6_dport = usin->sin6_port;
 	fl6.fl6_sport = inet->inet_sport;
-	security_sk_classify_flow(sk, flowi6_to_flowi_common(&fl6));
+	security_sk_classify_flow(sk, flowi6_to_flowi(&fl6));
 
 	opt = rcu_dereference_protected(np->opt, lockdep_sock_is_held(sk));
 	final_p = fl6_update_dst(&fl6, opt, &final);
@@ -932,10 +925,7 @@ static int dccp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 
 	if (saddr == NULL) {
 		saddr = &fl6.saddr;
-
-		err = inet_bhash2_update_saddr(sk, saddr, AF_INET6);
-		if (err)
-			goto failure;
+		sk->sk_v6_rcv_saddr = *saddr;
 	}
 
 	/* set the source address */
@@ -967,7 +957,6 @@ static int dccp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 
 late_failure:
 	dccp_set_state(sk, DCCP_CLOSED);
-	inet_bhash2_reset_saddr(sk);
 	__sk_dst_reset(sk);
 failure:
 	inet->inet_dport = 0;
@@ -1004,12 +993,6 @@ static const struct inet_connection_sock_af_ops dccp_ipv6_mapped = {
 	.sockaddr_len	   = sizeof(struct sockaddr_in6),
 };
 
-static void dccp_v6_sk_destruct(struct sock *sk)
-{
-	dccp_destruct_common(sk);
-	inet6_sock_destruct(sk);
-}
-
 /* NOTE: A lot of things set to zero explicitly by call to
  *       sk_alloc() so need not be done here.
  */
@@ -1022,10 +1005,15 @@ static int dccp_v6_init_sock(struct sock *sk)
 		if (unlikely(!dccp_v6_ctl_sock_initialized))
 			dccp_v6_ctl_sock_initialized = 1;
 		inet_csk(sk)->icsk_af_ops = &dccp_ipv6_af_ops;
-		sk->sk_destruct = dccp_v6_sk_destruct;
 	}
 
 	return err;
+}
+
+static void dccp_v6_destroy_sock(struct sock *sk)
+{
+	dccp_destroy_sock(sk);
+	inet6_destroy_sock(sk);
 }
 
 static struct timewait_sock_ops dccp6_timewait_sock_ops = {
@@ -1050,7 +1038,7 @@ static struct proto dccp_v6_prot = {
 	.accept		   = inet_csk_accept,
 	.get_port	   = inet_csk_get_port,
 	.shutdown	   = dccp_shutdown,
-	.destroy	   = dccp_destroy_sock,
+	.destroy	   = dccp_v6_destroy_sock,
 	.orphan_count	   = &dccp_orphan_count,
 	.max_header	   = MAX_DCCP_HEADER,
 	.obj_size	   = sizeof(struct dccp6_sock),
@@ -1101,20 +1089,16 @@ static struct inet_protosw dccp_v6_protosw = {
 
 static int __net_init dccp_v6_init_net(struct net *net)
 {
-	struct dccp_v6_pernet *pn = net_generic(net, dccp_v6_pernet_id);
-
 	if (dccp_hashinfo.bhash == NULL)
 		return -ESOCKTNOSUPPORT;
 
-	return inet_ctl_sock_create(&pn->v6_ctl_sk, PF_INET6,
+	return inet_ctl_sock_create(&net->dccp.v6_ctl_sk, PF_INET6,
 				    SOCK_DCCP, IPPROTO_DCCP, net);
 }
 
 static void __net_exit dccp_v6_exit_net(struct net *net)
 {
-	struct dccp_v6_pernet *pn = net_generic(net, dccp_v6_pernet_id);
-
-	inet_ctl_sock_destroy(pn->v6_ctl_sk);
+	inet_ctl_sock_destroy(net->dccp.v6_ctl_sk);
 }
 
 static void __net_exit dccp_v6_exit_batch(struct list_head *net_exit_list)
@@ -1126,8 +1110,6 @@ static struct pernet_operations dccp_v6_ops = {
 	.init   = dccp_v6_init_net,
 	.exit   = dccp_v6_exit_net,
 	.exit_batch = dccp_v6_exit_batch,
-	.id	= &dccp_v6_pernet_id,
-	.size   = sizeof(struct dccp_v6_pernet),
 };
 
 static int __init dccp_v6_init(void)

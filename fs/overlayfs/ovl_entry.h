@@ -14,11 +14,9 @@ struct ovl_config {
 	bool redirect_follow;
 	const char *redirect_mode;
 	bool index;
-	bool uuid;
 	bool nfs_export;
 	int xino;
 	bool metacopy;
-	bool userxattr;
 	bool ovl_volatile;
 };
 
@@ -90,11 +88,6 @@ static inline struct vfsmount *ovl_upper_mnt(struct ovl_fs *ofs)
 	return ofs->layers[0].mnt;
 }
 
-static inline struct mnt_idmap *ovl_upper_mnt_idmap(struct ovl_fs *ofs)
-{
-	return mnt_idmap(ovl_upper_mnt(ofs));
-}
-
 static inline struct ovl_fs *OVL_FS(struct super_block *sb)
 {
 	return (struct ovl_fs *)sb->s_fs_info;
@@ -134,7 +127,7 @@ struct ovl_inode {
 	unsigned long flags;
 	struct inode vfs_inode;
 	struct dentry *__upperdentry;
-	struct ovl_path lowerpath;
+	struct inode *lower;
 
 	/* synchronize copy up and more */
 	struct mutex lock;

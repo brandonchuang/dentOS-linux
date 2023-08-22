@@ -7,8 +7,8 @@ workflows related to reporting bugs, submitting patches, and queueing
 patches for stable kernels.
 
 For general information about submitting patches, please refer to
-Documentation/process/submitting-patches.rst. This document only describes
-additional specifics related to BPF.
+`Documentation/process/`_. This document only describes additional specifics
+related to BPF.
 
 .. contents::
     :local:
@@ -29,7 +29,7 @@ list:
 This may also include issues related to XDP, BPF tracing, etc.
 
 Given netdev has a high volume of traffic, please also add the BPF
-maintainers to Cc (from kernel ``MAINTAINERS`` file):
+maintainers to Cc (from kernel MAINTAINERS_ file):
 
 * Alexei Starovoitov <ast@kernel.org>
 * Daniel Borkmann <daniel@iogearbox.net>
@@ -43,33 +43,6 @@ is a guarantee that the reported issue will be overlooked.**
 
 Submitting patches
 ==================
-
-Q: How do I run BPF CI on my changes before sending them out for review?
-------------------------------------------------------------------------
-A: BPF CI is GitHub based and hosted at https://github.com/kernel-patches/bpf.
-While GitHub also provides a CLI that can be used to accomplish the same
-results, here we focus on the UI based workflow.
-
-The following steps lay out how to start a CI run for your patches:
-
-- Create a fork of the aforementioned repository in your own account (one time
-  action)
-
-- Clone the fork locally, check out a new branch tracking either the bpf-next
-  or bpf branch, and apply your to-be-tested patches on top of it
-
-- Push the local branch to your fork and create a pull request against
-  kernel-patches/bpf's bpf-next_base or bpf_base branch, respectively
-
-Shortly after the pull request has been created, the CI workflow will run. Note
-that capacity is shared with patches submitted upstream being checked and so
-depending on utilization the run can take a while to finish.
-
-Note furthermore that both base branches (bpf-next_base and bpf_base) will be
-updated as patches are pushed to the respective upstream branches they track. As
-such, your patch set will automatically (be attempted to) be rebased as well.
-This behavior can result in a CI run being aborted and restarted with the new
-base line.
 
 Q: To which mailing list do I need to submit my BPF patches?
 ------------------------------------------------------------
@@ -261,11 +234,11 @@ be subject to change.
 
 Q: samples/bpf preference vs selftests?
 ---------------------------------------
-Q: When should I add code to ``samples/bpf/`` and when to BPF kernel
-selftests_?
+Q: When should I add code to `samples/bpf/`_ and when to BPF kernel
+selftests_ ?
 
 A: In general, we prefer additions to BPF kernel selftests_ rather than
-``samples/bpf/``. The rationale is very simple: kernel selftests are
+`samples/bpf/`_. The rationale is very simple: kernel selftests are
 regularly run by various bots to test for kernel regressions.
 
 The more test cases we add to BPF selftests, the better the coverage
@@ -273,9 +246,9 @@ and the less likely it is that those could accidentally break. It is
 not that BPF kernel selftests cannot demo how a specific feature can
 be used.
 
-That said, ``samples/bpf/`` may be a good place for people to get started,
+That said, `samples/bpf/`_ may be a good place for people to get started,
 so it might be advisable that simple demos of features could go into
-``samples/bpf/``, but advanced functional and corner-case testing rather
+`samples/bpf/`_, but advanced functional and corner-case testing rather
 into kernel selftests.
 
 If your sample looks like a test case, then go for BPF kernel selftests
@@ -461,33 +434,20 @@ needed::
 
   $ sudo make run_tests
 
-See :doc:`kernel selftest documentation </dev-tools/kselftest>`
-for details.
+See the kernels selftest `Documentation/dev-tools/kselftest.rst`_
+document for further documentation.
 
 To maximize the number of tests passing, the .config of the kernel
 under test should match the config file fragment in
 tools/testing/selftests/bpf as closely as possible.
 
 Finally to ensure support for latest BPF Type Format features -
-discussed in Documentation/bpf/btf.rst - pahole version 1.16
+discussed in `Documentation/bpf/btf.rst`_ - pahole version 1.16
 is required for kernels built with CONFIG_DEBUG_INFO_BTF=y.
 pahole is delivered in the dwarves package or can be built
 from source at
 
 https://github.com/acmel/dwarves
-
-pahole starts to use libbpf definitions and APIs since v1.13 after the
-commit 21507cd3e97b ("pahole: add libbpf as submodule under lib/bpf").
-It works well with the git repository because the libbpf submodule will
-use "git submodule update --init --recursive" to update.
-
-Unfortunately, the default github release source code does not contain
-libbpf submodule source code and this will cause build issues, the tarball
-from https://git.kernel.org/pub/scm/devel/pahole/pahole.git/ is same with
-github, you can get the source tarball with corresponding libbpf submodule
-codes from
-
-https://fedorapeople.org/~acme/dwarves
 
 Some distros have pahole version 1.16 packaged already, e.g.
 Fedora, Gentoo.
@@ -541,19 +501,16 @@ All LLVM releases can be found at: http://releases.llvm.org/
 
 Q: Got it, so how do I build LLVM manually anyway?
 --------------------------------------------------
-A: We recommend that developers who want the fastest incremental builds
-use the Ninja build system, you can find it in your system's package
-manager, usually the package is ninja or ninja-build.
-
-You need ninja, cmake and gcc-c++ as build requisites for LLVM. Once you
-have that set up, proceed with building the latest LLVM and clang version
+A: You need cmake and gcc-c++ as build requisites for LLVM. Once you have
+that set up, proceed with building the latest LLVM and clang version
 from the git repositories::
 
      $ git clone https://github.com/llvm/llvm-project.git
-     $ mkdir -p llvm-project/llvm/build
+     $ mkdir -p llvm-project/llvm/build/install
      $ cd llvm-project/llvm/build
      $ cmake .. -G "Ninja" -DLLVM_TARGETS_TO_BUILD="BPF;X86" \
                 -DLLVM_ENABLE_PROJECTS="clang"    \
+                -DBUILD_SHARED_LIBS=OFF           \
                 -DCMAKE_BUILD_TYPE=Release        \
                 -DLLVM_BUILD_RUNTIME=OFF
      $ ninja
@@ -684,8 +641,13 @@ when:
 
 
 .. Links
-.. _netdev-FAQ: Documentation/process/maintainer-netdev.rst
-.. _selftests:
-   https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/tools/testing/selftests/bpf/
+.. _Documentation/process/: https://www.kernel.org/doc/html/latest/process/
+.. _MAINTAINERS: ../../MAINTAINERS
+.. _netdev-FAQ: ../networking/netdev-FAQ.rst
+.. _samples/bpf/: ../../samples/bpf/
+.. _selftests: ../../tools/testing/selftests/bpf/
+.. _Documentation/dev-tools/kselftest.rst:
+   https://www.kernel.org/doc/html/latest/dev-tools/kselftest.html
+.. _Documentation/bpf/btf.rst: btf.rst
 
 Happy BPF hacking!

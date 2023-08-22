@@ -73,8 +73,6 @@ static int afs_do_silly_rename(struct afs_vnode *dvnode, struct afs_vnode *vnode
 	afs_op_set_vnode(op, 1, dvnode);
 	op->file[0].dv_delta = 1;
 	op->file[1].dv_delta = 1;
-	op->file[0].modification = true;
-	op->file[1].modification = true;
 	op->file[0].update_ctime = true;
 	op->file[1].update_ctime = true;
 
@@ -86,8 +84,8 @@ static int afs_do_silly_rename(struct afs_vnode *dvnode, struct afs_vnode *vnode
 	return afs_do_sync_operation(op);
 }
 
-/*
- * Perform silly-rename of a dentry.
+/**
+ * afs_sillyrename - Perform a silly-rename of a dentry
  *
  * AFS is stateless and the server doesn't know when the client is holding a
  * file open.  To prevent application problems when a file is unlinked while
@@ -131,7 +129,7 @@ int afs_sillyrename(struct afs_vnode *dvnode, struct afs_vnode *vnode,
 			goto out;
 	} while (!d_is_negative(sdentry));
 
-	ihold(&vnode->netfs.inode);
+	ihold(&vnode->vfs_inode);
 
 	ret = afs_do_silly_rename(dvnode, vnode, dentry, sdentry, key);
 	switch (ret) {
@@ -148,7 +146,7 @@ int afs_sillyrename(struct afs_vnode *dvnode, struct afs_vnode *vnode,
 		d_drop(sdentry);
 	}
 
-	iput(&vnode->netfs.inode);
+	iput(&vnode->vfs_inode);
 	dput(sdentry);
 out:
 	_leave(" = %d", ret);
@@ -203,7 +201,6 @@ static int afs_do_silly_unlink(struct afs_vnode *dvnode, struct afs_vnode *vnode
 	afs_op_set_vnode(op, 0, dvnode);
 	afs_op_set_vnode(op, 1, vnode);
 	op->file[0].dv_delta = 1;
-	op->file[0].modification = true;
 	op->file[0].update_ctime = true;
 	op->file[1].op_unlinked = true;
 	op->file[1].update_ctime = true;

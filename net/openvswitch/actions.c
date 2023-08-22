@@ -30,7 +30,6 @@
 #include "conntrack.h"
 #include "vport.h"
 #include "flow_netlink.h"
-#include "openvswitch_trace.h"
 
 struct deferred_action {
 	struct sk_buff *skb;
@@ -373,7 +372,6 @@ static void set_ip_addr(struct sk_buff *skb, struct iphdr *nh,
 	update_ip_l4_checksum(skb, nh, *addr, new_addr);
 	csum_replace4(&nh->check, *addr, new_addr);
 	skb_clear_hash(skb);
-	ovs_ct_clear(skb, NULL);
 	*addr = new_addr;
 }
 
@@ -421,47 +419,15 @@ static void set_ipv6_addr(struct sk_buff *skb, u8 l4_proto,
 		update_ipv6_checksum(skb, l4_proto, addr, new_addr);
 
 	skb_clear_hash(skb);
-	ovs_ct_clear(skb, NULL);
 	memcpy(addr, new_addr, sizeof(__be32[4]));
 }
 
-static void set_ipv6_dsfield(struct sk_buff *skb, struct ipv6hdr *nh, u8 ipv6_tclass, u8 mask)
+static void set_ipv6_fl(struct ipv6hdr *nh, u32 fl, u32 mask)
 {
-	u8 old_ipv6_tclass = ipv6_get_dsfield(nh);
-
-	ipv6_tclass = OVS_MASKED(old_ipv6_tclass, ipv6_tclass, mask);
-
-	if (skb->ip_summed == CHECKSUM_COMPLETE)
-		csum_replace(&skb->csum, (__force __wsum)(old_ipv6_tclass << 12),
-			     (__force __wsum)(ipv6_tclass << 12));
-
-	ipv6_change_dsfield(nh, ~mask, ipv6_tclass);
-}
-
-static void set_ipv6_fl(struct sk_buff *skb, struct ipv6hdr *nh, u32 fl, u32 mask)
-{
-	u32 ofl;
-
-	ofl = nh->flow_lbl[0] << 16 |  nh->flow_lbl[1] << 8 |  nh->flow_lbl[2];
-	fl = OVS_MASKED(ofl, fl, mask);
-
 	/* Bits 21-24 are always unmasked, so this retains their values. */
-	nh->flow_lbl[0] = (u8)(fl >> 16);
-	nh->flow_lbl[1] = (u8)(fl >> 8);
-	nh->flow_lbl[2] = (u8)fl;
-
-	if (skb->ip_summed == CHECKSUM_COMPLETE)
-		csum_replace(&skb->csum, (__force __wsum)htonl(ofl), (__force __wsum)htonl(fl));
-}
-
-static void set_ipv6_ttl(struct sk_buff *skb, struct ipv6hdr *nh, u8 new_ttl, u8 mask)
-{
-	new_ttl = OVS_MASKED(nh->hop_limit, new_ttl, mask);
-
-	if (skb->ip_summed == CHECKSUM_COMPLETE)
-		csum_replace(&skb->csum, (__force __wsum)(nh->hop_limit << 8),
-			     (__force __wsum)(new_ttl << 8));
-	nh->hop_limit = new_ttl;
+	OVS_SET_MASKED(nh->flow_lbl[0], (u8)(fl >> 16), (u8)(mask >> 16));
+	OVS_SET_MASKED(nh->flow_lbl[1], (u8)(fl >> 8), (u8)(mask >> 8));
+	OVS_SET_MASKED(nh->flow_lbl[2], (u8)fl, (u8)mask);
 }
 
 static void set_ip_ttl(struct sk_buff *skb, struct iphdr *nh, u8 new_ttl,
@@ -579,17 +545,18 @@ static int set_ipv6(struct sk_buff *skb, struct sw_flow_key *flow_key,
 		}
 	}
 	if (mask->ipv6_tclass) {
-		set_ipv6_dsfield(skb, nh, key->ipv6_tclass, mask->ipv6_tclass);
+		ipv6_change_dsfield(nh, ~mask->ipv6_tclass, key->ipv6_tclass);
 		flow_key->ip.tos = ipv6_get_dsfield(nh);
 	}
 	if (mask->ipv6_label) {
-		set_ipv6_fl(skb, nh, ntohl(key->ipv6_label),
+		set_ipv6_fl(nh, ntohl(key->ipv6_label),
 			    ntohl(mask->ipv6_label));
 		flow_key->ipv6.label =
 		    *(__be32 *)nh & htonl(IPV6_FLOWINFO_FLOWLABEL);
 	}
 	if (mask->ipv6_hlimit) {
-		set_ipv6_ttl(skb, nh, key->ipv6_hlimit, mask->ipv6_hlimit);
+		OVS_SET_MASKED(nh->hop_limit, key->ipv6_hlimit,
+			       mask->ipv6_hlimit);
 		flow_key->ip.ttl = nh->hop_limit;
 	}
 	return 0;
@@ -662,7 +629,6 @@ static int set_nsh(struct sk_buff *skb, struct sw_flow_key *flow_key,
 static void set_tp_port(struct sk_buff *skb, __be16 *port,
 			__be16 new_port, __sum16 *check)
 {
-	ovs_ct_clear(skb, NULL);
 	inet_proto_csum_replace2(check, skb, *port, new_port, false);
 	*port = new_port;
 }
@@ -702,7 +668,6 @@ static int set_udp(struct sk_buff *skb, struct sw_flow_key *flow_key,
 		uh->dest = dst;
 		flow_key->tp.src = src;
 		flow_key->tp.dst = dst;
-		ovs_ct_clear(skb, NULL);
 	}
 
 	skb_clear_hash(skb);
@@ -765,8 +730,6 @@ static int set_sctp(struct sk_buff *skb, struct sw_flow_key *flow_key,
 	sh->checksum = old_csum ^ old_correct_csum ^ new_csum;
 
 	skb_clear_hash(skb);
-	ovs_ct_clear(skb, NULL);
-
 	flow_key->tp.src = sh->source;
 	flow_key->tp.dst = sh->dest;
 
@@ -864,17 +827,17 @@ static void ovs_fragment(struct net *net, struct vport *vport,
 	}
 
 	if (key->eth.type == htons(ETH_P_IP)) {
-		struct rtable ovs_rt = { 0 };
+		struct dst_entry ovs_dst;
 		unsigned long orig_dst;
 
 		prepare_frag(vport, skb, orig_network_offset,
 			     ovs_key_mac_proto(key));
-		dst_init(&ovs_rt.dst, &ovs_dst_ops, NULL, 1,
+		dst_init(&ovs_dst, &ovs_dst_ops, NULL, 1,
 			 DST_OBSOLETE_NONE, DST_NOCOUNT);
-		ovs_rt.dst.dev = vport->dev;
+		ovs_dst.dev = vport->dev;
 
 		orig_dst = skb->_skb_refdst;
-		skb_dst_set_noref(skb, &ovs_rt.dst);
+		skb_dst_set_noref(skb, &ovs_dst);
 		IPCB(skb)->frag_max_size = mru;
 
 		ip_do_fragment(net, skb->sk, skb, ovs_vport_output);
@@ -960,13 +923,7 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 			break;
 
 		case OVS_USERSPACE_ATTR_PID:
-			if (dp->user_features &
-			    OVS_DP_F_DISPATCH_UPCALL_PER_CPU)
-				upcall.portid =
-				  ovs_dp_get_upcall_portid(dp,
-							   smp_processor_id());
-			else
-				upcall.portid = nla_get_u32(a);
+			upcall.portid = nla_get_u32(a);
 			break;
 
 		case OVS_USERSPACE_ATTR_EGRESS_TUN_PORT: {
@@ -1000,14 +957,14 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 
 static int dec_ttl_exception_handler(struct datapath *dp, struct sk_buff *skb,
 				     struct sw_flow_key *key,
-				     const struct nlattr *attr)
+				     const struct nlattr *attr, bool last)
 {
 	/* The first attribute is always 'OVS_DEC_TTL_ATTR_ACTION'. */
 	struct nlattr *actions = nla_data(attr);
 
 	if (nla_len(actions))
 		return clone_execute(dp, skb, key, 0, nla_data(actions),
-				     nla_len(actions), true, false);
+				     nla_len(actions), last, false);
 
 	consume_skb(skb);
 	return 0;
@@ -1033,7 +990,7 @@ static int sample(struct datapath *dp, struct sk_buff *skb,
 	actions = nla_next(sample_arg, &rem);
 
 	if ((arg->probability != U32_MAX) &&
-	    (!arg->probability || get_random_u32() > arg->probability)) {
+	    (!arg->probability || prandom_u32() > arg->probability)) {
 		if (last)
 			consume_skb(skb);
 		return 0;
@@ -1057,7 +1014,7 @@ static int clone(struct datapath *dp, struct sk_buff *skb,
 	int rem = nla_len(attr);
 	bool dont_clone_flow_key;
 
-	/* The first action is always 'OVS_CLONE_ATTR_EXEC'. */
+	/* The first action is always 'OVS_CLONE_ATTR_ARG'. */
 	clone_arg = nla_data(attr);
 	dont_clone_flow_key = nla_get_u32(clone_arg);
 	actions = nla_next(clone_arg, &rem);
@@ -1285,9 +1242,6 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
 	     a = nla_next(a, &rem)) {
 		int err = 0;
 
-		if (trace_ovs_do_execute_action_enabled())
-			trace_ovs_do_execute_action(dp, skb, key, a, rem);
-
 		switch (nla_type(a)) {
 		case OVS_ACTION_ATTR_OUTPUT: {
 			int port = nla_get_u32(a);
@@ -1464,9 +1418,11 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
 
 		case OVS_ACTION_ATTR_DEC_TTL:
 			err = execute_dec_ttl(skb, key);
-			if (err == -EHOSTUNREACH)
-				return dec_ttl_exception_handler(dp, skb,
-								 key, a);
+			if (err == -EHOSTUNREACH) {
+				err = dec_ttl_exception_handler(dp, skb, key,
+								a, true);
+				return err;
+			}
 			break;
 		}
 
@@ -1545,8 +1501,8 @@ static int clone_execute(struct datapath *dp, struct sk_buff *skb,
 				pr_warn("%s: deferred action limit reached, drop sample action\n",
 					ovs_dp_name(dp));
 			} else {  /* Recirc action */
-				pr_warn("%s: deferred action limit reached, drop recirc action (recirc_id=%#x)\n",
-					ovs_dp_name(dp), recirc_id);
+				pr_warn("%s: deferred action limit reached, drop recirc action\n",
+					ovs_dp_name(dp));
 			}
 		}
 	}

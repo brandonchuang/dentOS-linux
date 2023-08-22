@@ -12,12 +12,6 @@
 #ifndef _S390_CHECKSUM_H
 #define _S390_CHECKSUM_H
 
-#ifdef CONFIG_GENERIC_CSUM
-
-#include <asm-generic/checksum.h>
-
-#else /* CONFIG_GENERIC_CSUM */
-
 #include <linux/uaccess.h>
 #include <linux/in6.h>
 
@@ -35,15 +29,13 @@
  */
 static inline __wsum csum_partial(const void *buff, int len, __wsum sum)
 {
-	union register_pair rp = {
-		.even = (unsigned long) buff,
-		.odd = (unsigned long) len,
-	};
+	register unsigned long reg2 asm("2") = (unsigned long) buff;
+	register unsigned long reg3 asm("3") = (unsigned long) len;
 
 	asm volatile(
-		"0:	cksm	%[sum],%[rp]\n"
+		"0:	cksm	%0,%1\n"	/* do checksum on longs */
 		"	jo	0b\n"
-		: [sum] "+&d" (sum), [rp] "+&d" (rp.pair) : : "cc", "memory");
+		: "+d" (sum), "+d" (reg2), "+d" (reg3) : : "cc", "memory");
 	return sum;
 }
 
@@ -135,5 +127,4 @@ static inline __sum16 csum_ipv6_magic(const struct in6_addr *saddr,
 	return csum_fold((__force __wsum)(sum >> 32));
 }
 
-#endif /* CONFIG_GENERIC_CSUM */
 #endif /* _S390_CHECKSUM_H */

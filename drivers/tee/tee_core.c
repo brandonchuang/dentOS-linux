@@ -14,7 +14,7 @@
 #include <linux/tee_drv.h>
 #include <linux/uaccess.h>
 #include <crypto/hash.h>
-#include <crypto/sha1.h>
+#include <crypto/sha.h>
 #include "tee_private.h"
 
 #define TEE_NUM_DEVICES	32
@@ -43,7 +43,7 @@ static DEFINE_SPINLOCK(driver_lock);
 static struct class *tee_class;
 static dev_t tee_devt;
 
-struct tee_context *teedev_open(struct tee_device *teedev)
+static struct tee_context *teedev_open(struct tee_device *teedev)
 {
 	int rc;
 	struct tee_context *ctx;
@@ -70,7 +70,6 @@ err:
 	return ERR_PTR(rc);
 
 }
-EXPORT_SYMBOL_GPL(teedev_open);
 
 void teedev_ctx_get(struct tee_context *ctx)
 {
@@ -97,14 +96,11 @@ void teedev_ctx_put(struct tee_context *ctx)
 	kref_put(&ctx->refcount, teedev_ctx_release);
 }
 
-void teedev_close_context(struct tee_context *ctx)
+static void teedev_close_context(struct tee_context *ctx)
 {
-	struct tee_device *teedev = ctx->teedev;
-
+	tee_device_put(ctx->teedev);
 	teedev_ctx_put(ctx);
-	tee_device_put(teedev);
 }
-EXPORT_SYMBOL_GPL(teedev_close_context);
 
 static int tee_open(struct inode *inode, struct file *filp)
 {
@@ -297,11 +293,12 @@ static int tee_ioctl_shm_alloc(struct tee_context *ctx,
 	if (data.flags)
 		return -EINVAL;
 
-	shm = tee_shm_alloc_user_buf(ctx, data.size);
+	shm = tee_shm_alloc(ctx, data.size, TEE_SHM_MAPPED | TEE_SHM_DMA_BUF);
 	if (IS_ERR(shm))
 		return PTR_ERR(shm);
 
 	data.id = shm->id;
+	data.flags = shm->flags;
 	data.size = shm->size;
 
 	if (copy_to_user(udata, &data, sizeof(data)))
@@ -333,11 +330,13 @@ tee_ioctl_shm_register(struct tee_context *ctx,
 	if (data.flags)
 		return -EINVAL;
 
-	shm = tee_shm_register_user_buf(ctx, data.addr, data.length);
+	shm = tee_shm_register(ctx, data.addr, data.length,
+			       TEE_SHM_DMA_BUF | TEE_SHM_USER_MAPPED);
 	if (IS_ERR(shm))
 		return PTR_ERR(shm);
 
 	data.id = shm->id;
+	data.flags = shm->flags;
 	data.length = shm->size;
 
 	if (copy_to_user(udata, &data, sizeof(data)))
@@ -453,7 +452,6 @@ static int params_to_user(struct tee_ioctl_param __user *uparams,
 		case TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INOUT:
 			if (put_user((u64)p->u.memref.size, &up->b))
 				return -EFAULT;
-			break;
 		default:
 			break;
 		}
@@ -1073,7 +1071,7 @@ EXPORT_SYMBOL_GPL(tee_device_unregister);
 /**
  * tee_get_drvdata() - Return driver_data pointer
  * @teedev:	Device containing the driver_data pointer
- * @returns the driver_data pointer supplied to tee_device_alloc().
+ * @returns the driver_data pointer supplied to tee_register().
  */
 void *tee_get_drvdata(struct tee_device *teedev)
 {
@@ -1207,7 +1205,7 @@ static int tee_client_device_match(struct device *dev,
 	return 0;
 }
 
-static int tee_client_device_uevent(const struct device *dev,
+static int tee_client_device_uevent(struct device *dev,
 				    struct kobj_uevent_env *env)
 {
 	uuid_t *dev_id = &to_tee_client_device(dev)->id.uuid;

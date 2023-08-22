@@ -255,6 +255,7 @@ static const struct regmap_config stm32_cec_regmap_cfg = {
 static int stm32_cec_probe(struct platform_device *pdev)
 {
 	u32 caps = CEC_CAP_DEFAULTS | CEC_CAP_PHYS_ADDR | CEC_MODE_MONITOR_ALL;
+	struct resource *res;
 	struct stm32_cec *cec;
 	void __iomem *mmio;
 	int ret;
@@ -265,7 +266,8 @@ static int stm32_cec_probe(struct platform_device *pdev)
 
 	cec->dev = &pdev->dev;
 
-	mmio = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	mmio = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(mmio))
 		return PTR_ERR(mmio);
 
@@ -288,9 +290,12 @@ static int stm32_cec_probe(struct platform_device *pdev)
 		return ret;
 
 	cec->clk_cec = devm_clk_get(&pdev->dev, "cec");
-	if (IS_ERR(cec->clk_cec))
-		return dev_err_probe(&pdev->dev, PTR_ERR(cec->clk_cec),
-				     "Cannot get cec clock\n");
+	if (IS_ERR(cec->clk_cec)) {
+		if (PTR_ERR(cec->clk_cec) != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "Cannot get cec clock\n");
+
+		return PTR_ERR(cec->clk_cec);
+	}
 
 	ret = clk_prepare(cec->clk_cec);
 	if (ret) {
@@ -300,16 +305,14 @@ static int stm32_cec_probe(struct platform_device *pdev)
 
 	cec->clk_hdmi_cec = devm_clk_get(&pdev->dev, "hdmi-cec");
 	if (IS_ERR(cec->clk_hdmi_cec) &&
-	    PTR_ERR(cec->clk_hdmi_cec) == -EPROBE_DEFER) {
-		ret = -EPROBE_DEFER;
-		goto err_unprepare_cec_clk;
-	}
+	    PTR_ERR(cec->clk_hdmi_cec) == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
 
 	if (!IS_ERR(cec->clk_hdmi_cec)) {
 		ret = clk_prepare(cec->clk_hdmi_cec);
 		if (ret) {
 			dev_err(&pdev->dev, "Can't prepare hdmi-cec clock\n");
-			goto err_unprepare_cec_clk;
+			return ret;
 		}
 	}
 
@@ -321,27 +324,19 @@ static int stm32_cec_probe(struct platform_device *pdev)
 			CEC_NAME, caps,	CEC_MAX_LOG_ADDRS);
 	ret = PTR_ERR_OR_ZERO(cec->adap);
 	if (ret)
-		goto err_unprepare_hdmi_cec_clk;
+		return ret;
 
 	ret = cec_register_adapter(cec->adap, &pdev->dev);
-	if (ret)
-		goto err_delete_adapter;
+	if (ret) {
+		cec_delete_adapter(cec->adap);
+		return ret;
+	}
 
 	cec_hw_init(cec);
 
 	platform_set_drvdata(pdev, cec);
 
 	return 0;
-
-err_delete_adapter:
-	cec_delete_adapter(cec->adap);
-
-err_unprepare_hdmi_cec_clk:
-	clk_unprepare(cec->clk_hdmi_cec);
-
-err_unprepare_cec_clk:
-	clk_unprepare(cec->clk_cec);
-	return ret;
 }
 
 static int stm32_cec_remove(struct platform_device *pdev)

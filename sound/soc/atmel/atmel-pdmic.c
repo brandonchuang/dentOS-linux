@@ -481,7 +481,7 @@ static const struct snd_soc_component_driver atmel_pdmic_cpu_dai_component = {
 	.num_controls		= ARRAY_SIZE(atmel_pdmic_snd_controls),
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
-	.legacy_dai_naming	= 1,
+	.endianness		= 1,
 };
 
 /* ASoC sound card */
@@ -620,7 +620,8 @@ static int atmel_pdmic_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	io_base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	io_base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(io_base))
 		return PTR_ERR(io_base);
 
@@ -692,6 +693,11 @@ unregister_codec:
 	return ret;
 }
 
+static int atmel_pdmic_remove(struct platform_device *pdev)
+{
+	return 0;
+}
+
 static struct platform_driver atmel_pdmic_driver = {
 	.driver	= {
 		.name		= "atmel-pdmic",
@@ -699,6 +705,7 @@ static struct platform_driver atmel_pdmic_driver = {
 		.pm		= &snd_soc_pm_ops,
 	},
 	.probe	= atmel_pdmic_probe,
+	.remove	= atmel_pdmic_remove,
 };
 module_platform_driver(atmel_pdmic_driver);
 

@@ -30,7 +30,6 @@ struct soc_device {
 static struct bus_type soc_bus_type = {
 	.name  = "soc",
 };
-static bool soc_bus_registered;
 
 static DEVICE_ATTR(machine,		0444, soc_info_show,  NULL);
 static DEVICE_ATTR(family,		0444, soc_info_show,  NULL);
@@ -118,7 +117,7 @@ struct soc_device *soc_device_register(struct soc_device_attribute *soc_dev_attr
 	const struct attribute_group **soc_attr_groups;
 	int ret;
 
-	if (!soc_bus_registered) {
+	if (!soc_bus_type.p) {
 		if (early_soc_dev_attr)
 			return ERR_PTR(-EBUSY);
 		early_soc_dev_attr = soc_dev_attr;
@@ -169,7 +168,7 @@ out1:
 }
 EXPORT_SYMBOL_GPL(soc_device_register);
 
-/* Ensure soc_dev->attr is freed after calling soc_device_unregister. */
+/* Ensure soc_dev->attr is freed prior to calling soc_device_unregister. */
 void soc_device_unregister(struct soc_device *soc_dev)
 {
 	device_unregister(&soc_dev->dev);
@@ -184,7 +183,6 @@ static int __init soc_bus_register(void)
 	ret = bus_register(&soc_bus_type);
 	if (ret)
 		return ret;
-	soc_bus_registered = true;
 
 	if (early_soc_dev_attr)
 		return PTR_ERR(soc_device_register(early_soc_dev_attr));
@@ -243,13 +241,15 @@ static int soc_device_match_one(struct device *dev, void *arg)
 const struct soc_device_attribute *soc_device_match(
 	const struct soc_device_attribute *matches)
 {
-	int ret;
+	int ret = 0;
 
 	if (!matches)
 		return NULL;
 
-	while (matches->machine || matches->family || matches->revision ||
-	       matches->soc_id) {
+	while (!ret) {
+		if (!(matches->machine || matches->family ||
+		      matches->revision || matches->soc_id))
+			break;
 		ret = bus_for_each_dev(&soc_bus_type, NULL, (void *)matches,
 				       soc_device_match_one);
 		if (ret < 0 && early_soc_dev_attr)
@@ -257,10 +257,10 @@ const struct soc_device_attribute *soc_device_match(
 						    matches);
 		if (ret < 0)
 			return NULL;
-		if (ret)
+		if (!ret)
+			matches++;
+		else
 			return matches;
-
-		matches++;
 	}
 	return NULL;
 }

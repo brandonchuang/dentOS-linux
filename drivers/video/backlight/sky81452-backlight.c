@@ -41,7 +41,7 @@
 #define SKY81452_MAX_BRIGHTNESS	(SKY81452_CS + 1)
 
 /**
- * struct sky81452_bl_platform_data - backlight platform data
+ * struct sky81452_platform_data
  * @name:	backlight driver name.
  *		If it is not defined, default name is lcd-backlight.
  * @gpiod_enable:GPIO descriptor which control EN pin
@@ -291,7 +291,7 @@ static int sky81452_bl_probe(struct platform_device *pdev)
 	}
 
 	memset(&props, 0, sizeof(props));
-	props.max_brightness = SKY81452_MAX_BRIGHTNESS;
+	props.max_brightness = SKY81452_MAX_BRIGHTNESS,
 	name = pdata->name ? pdata->name : SKY81452_DEFAULT_NAME;
 	bd = devm_backlight_device_register(dev, name, dev, regmap,
 						&sky81452_bl_ops, &props);

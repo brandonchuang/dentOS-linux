@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 // Copyright (C) 2018 Facebook
 
-#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
-#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -159,7 +157,7 @@ static int netlink_recv(int sock, __u32 nl_pid, __u32 seq,
 		if (len == 0)
 			break;
 
-		for (nh = (struct nlmsghdr *)buf; NLMSG_OK(nh, (unsigned int)len);
+		for (nh = (struct nlmsghdr *)buf; NLMSG_OK(nh, len);
 		     nh = NLMSG_NEXT(nh, len)) {
 			if (nh->nlmsg_pid != nl_pid) {
 				ret = -LIBBPF_ERRNO__WRNGPID;
@@ -553,7 +551,7 @@ static int do_attach_detach_xdp(int progfd, enum net_attach_type attach_type,
 	if (attach_type == NET_ATTACH_TYPE_XDP_OFFLOAD)
 		flags |= XDP_FLAGS_HW_MODE;
 
-	return bpf_xdp_attach(ifindex, progfd, flags, NULL);
+	return bpf_set_link_xdp_fd(ifindex, progfd, flags);
 }
 
 static int do_attach(int argc, char **argv)
@@ -731,7 +729,6 @@ static int do_help(int argc, char **argv)
 		"\n"
 		"       " HELP_SPEC_PROGRAM "\n"
 		"       ATTACH_TYPE := { xdp | xdpgeneric | xdpdrv | xdpoffload }\n"
-		"       " HELP_SPEC_OPTIONS " }\n"
 		"\n"
 		"Note: Only xdp and tc attachments are supported now.\n"
 		"      For progs attached to cgroups, use \"bpftool cgroup\"\n"

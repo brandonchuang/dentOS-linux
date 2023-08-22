@@ -10,7 +10,6 @@
 #include "xfs_trans_resv.h"
 #include "xfs_mount.h"
 #include "xfs_btree.h"
-#include "scrub/scrub.h"
 #include "scrub/bitmap.h"
 
 /*
@@ -26,7 +25,7 @@ xbitmap_set(
 {
 	struct xbitmap_range	*bmr;
 
-	bmr = kmalloc(sizeof(struct xbitmap_range), XCHK_GFP_FLAGS);
+	bmr = kmem_alloc(sizeof(struct xbitmap_range), KM_MAYFAIL);
 	if (!bmr)
 		return -ENOMEM;
 
@@ -48,7 +47,7 @@ xbitmap_destroy(
 
 	for_each_xbitmap_extent(bmr, n, bitmap) {
 		list_del(&bmr->list);
-		kfree(bmr);
+		kmem_free(bmr);
 	}
 }
 
@@ -64,8 +63,8 @@ xbitmap_init(
 static int
 xbitmap_range_cmp(
 	void			*priv,
-	const struct list_head	*a,
-	const struct list_head	*b)
+	struct list_head	*a,
+	struct list_head	*b)
 {
 	struct xbitmap_range	*ap;
 	struct xbitmap_range	*bp;
@@ -175,15 +174,15 @@ xbitmap_disunion(
 			/* Total overlap, just delete ex. */
 			lp = lp->next;
 			list_del(&br->list);
-			kfree(br);
+			kmem_free(br);
 			break;
 		case 0:
 			/*
 			 * Deleting from the middle: add the new right extent
 			 * and then shrink the left extent.
 			 */
-			new_br = kmalloc(sizeof(struct xbitmap_range),
-					XCHK_GFP_FLAGS);
+			new_br = kmem_alloc(sizeof(struct xbitmap_range),
+					KM_MAYFAIL);
 			if (!new_br) {
 				error = -ENOMEM;
 				goto out;
@@ -223,21 +222,21 @@ out:
  * 1  2  3
  *
  * Pretend for this example that each leaf block has 100 btree records.  For
- * the first btree record, we'll observe that bc_levels[0].ptr == 1, so we
- * record that we saw block 1.  Then we observe that bc_levels[1].ptr == 1, so
- * we record block 4.  The list is [1, 4].
+ * the first btree record, we'll observe that bc_ptrs[0] == 1, so we record
+ * that we saw block 1.  Then we observe that bc_ptrs[1] == 1, so we record
+ * block 4.  The list is [1, 4].
  *
- * For the second btree record, we see that bc_levels[0].ptr == 2, so we exit
- * the loop.  The list remains [1, 4].
+ * For the second btree record, we see that bc_ptrs[0] == 2, so we exit the
+ * loop.  The list remains [1, 4].
  *
  * For the 101st btree record, we've moved onto leaf block 2.  Now
- * bc_levels[0].ptr == 1 again, so we record that we saw block 2.  We see that
- * bc_levels[1].ptr == 2, so we exit the loop.  The list is now [1, 4, 2].
+ * bc_ptrs[0] == 1 again, so we record that we saw block 2.  We see that
+ * bc_ptrs[1] == 2, so we exit the loop.  The list is now [1, 4, 2].
  *
- * For the 102nd record, bc_levels[0].ptr == 2, so we continue.
+ * For the 102nd record, bc_ptrs[0] == 2, so we continue.
  *
- * For the 201st record, we've moved on to leaf block 3.
- * bc_levels[0].ptr == 1, so we add 3 to the list.  Now it is [1, 4, 2, 3].
+ * For the 201st record, we've moved on to leaf block 3.  bc_ptrs[0] == 1, so
+ * we add 3 to the list.  Now it is [1, 4, 2, 3].
  *
  * For the 300th record we just exit, with the list being [1, 4, 2, 3].
  */
@@ -257,11 +256,11 @@ xbitmap_set_btcur_path(
 	int			i;
 	int			error;
 
-	for (i = 0; i < cur->bc_nlevels && cur->bc_levels[i].ptr == 1; i++) {
+	for (i = 0; i < cur->bc_nlevels && cur->bc_ptrs[i] == 1; i++) {
 		xfs_btree_get_block(cur, i, &bp);
 		if (!bp)
 			continue;
-		fsb = XFS_DADDR_TO_FSB(cur->bc_mp, xfs_buf_daddr(bp));
+		fsb = XFS_DADDR_TO_FSB(cur->bc_mp, bp->b_bn);
 		error = xbitmap_set(bitmap, fsb, 1);
 		if (error)
 			return error;
@@ -285,7 +284,7 @@ xbitmap_collect_btblock(
 	if (!bp)
 		return 0;
 
-	fsbno = XFS_DADDR_TO_FSB(cur->bc_mp, xfs_buf_daddr(bp));
+	fsbno = XFS_DADDR_TO_FSB(cur->bc_mp, bp->b_bn);
 	return xbitmap_set(bitmap, fsbno, 1);
 }
 

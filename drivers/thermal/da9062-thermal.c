@@ -95,7 +95,7 @@ static void da9062_thermal_poll_on(struct work_struct *work)
 		thermal_zone_device_update(thermal->zone,
 					   THERMAL_EVENT_UNSPECIFIED);
 
-		delay = thermal->zone->passive_delay_jiffies;
+		delay = msecs_to_jiffies(thermal->zone->passive_delay);
 		queue_delayed_work(system_freezable_wq, &thermal->work, delay);
 		return;
 	}
@@ -120,6 +120,44 @@ static irqreturn_t da9062_thermal_irq_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+static int da9062_thermal_get_trip_type(struct thermal_zone_device *z,
+					int trip,
+					enum thermal_trip_type *type)
+{
+	struct da9062_thermal *thermal = z->devdata;
+
+	switch (trip) {
+	case 0:
+		*type = THERMAL_TRIP_HOT;
+		break;
+	default:
+		dev_err(thermal->dev,
+			"Driver does not support more than 1 trip-wire\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int da9062_thermal_get_trip_temp(struct thermal_zone_device *z,
+					int trip,
+					int *temp)
+{
+	struct da9062_thermal *thermal = z->devdata;
+
+	switch (trip) {
+	case 0:
+		*temp = DA9062_MILLI_CELSIUS(125);
+		break;
+	default:
+		dev_err(thermal->dev,
+			"Driver does not support more than 1 trip-wire\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int da9062_thermal_get_temp(struct thermal_zone_device *z,
 				   int *temp)
 {
@@ -134,10 +172,8 @@ static int da9062_thermal_get_temp(struct thermal_zone_device *z,
 
 static struct thermal_zone_device_ops da9062_thermal_ops = {
 	.get_temp	= da9062_thermal_get_temp,
-};
-
-static struct thermal_trip trips[] = {
-	{ .temperature = DA9062_MILLI_CELSIUS(125), .type = THERMAL_TRIP_HOT },
+	.get_trip_type	= da9062_thermal_get_trip_type,
+	.get_trip_temp	= da9062_thermal_get_trip_temp,
 };
 
 static const struct da9062_thermal_config da9062_config = {
@@ -192,10 +228,10 @@ static int da9062_thermal_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&thermal->work, da9062_thermal_poll_on);
 	mutex_init(&thermal->lock);
 
-	thermal->zone = thermal_zone_device_register_with_trips(thermal->config->name,
-								trips, ARRAY_SIZE(trips), 0, thermal,
-								&da9062_thermal_ops, NULL, pp_tmp,
-								0);
+	thermal->zone = thermal_zone_device_register(thermal->config->name,
+					1, 0, thermal,
+					&da9062_thermal_ops, NULL, pp_tmp,
+					0);
 	if (IS_ERR(thermal->zone)) {
 		dev_err(&pdev->dev, "Cannot register thermal zone device\n");
 		ret = PTR_ERR(thermal->zone);
@@ -209,12 +245,13 @@ static int da9062_thermal_probe(struct platform_device *pdev)
 
 	dev_dbg(&pdev->dev,
 		"TJUNC temperature polling period set at %d ms\n",
-		jiffies_to_msecs(thermal->zone->passive_delay_jiffies));
+		thermal->zone->passive_delay);
 
 	ret = platform_get_irq_byname(pdev, "THERMAL");
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Failed to get platform IRQ.\n");
 		goto err_zone;
-
+	}
 	thermal->irq = ret;
 
 	ret = request_threaded_irq(thermal->irq, NULL,

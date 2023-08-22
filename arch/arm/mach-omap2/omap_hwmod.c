@@ -627,9 +627,6 @@ static struct clockdomain *_get_clkdm(struct omap_hwmod *oh)
 {
 	struct clk_hw_omap *clk;
 
-	if (!oh)
-		return NULL;
-
 	if (oh->clkdm) {
 		return oh->clkdm;
 	} else if (oh->_clk) {
@@ -752,10 +749,8 @@ static int __init _init_clkctrl_providers(void)
 
 	for_each_matching_node(np, ti_clkctrl_match_table) {
 		ret = _setup_clkctrl_provider(np);
-		if (ret) {
-			of_node_put(np);
+		if (ret)
 			break;
-		}
 	}
 
 	return ret;
@@ -814,7 +809,7 @@ static struct clk *_lookup_clkctrl_clk(struct omap_hwmod *oh)
 }
 
 /**
- * _init_main_clk - get a struct clk * for the hwmod's main functional clk
+ * _init_main_clk - get a struct clk * for the the hwmod's main functional clk
  * @oh: struct omap_hwmod *
  *
  * Called from _init_clocks().  Populates the @oh _clk (main
@@ -864,7 +859,7 @@ static int _init_main_clk(struct omap_hwmod *oh)
 }
 
 /**
- * _init_interface_clks - get a struct clk * for the hwmod's interface clks
+ * _init_interface_clks - get a struct clk * for the the hwmod's interface clks
  * @oh: struct omap_hwmod *
  *
  * Called from _init_clocks().  Populates the @oh OCP slave interface
@@ -903,7 +898,7 @@ static int _init_interface_clks(struct omap_hwmod *oh)
 }
 
 /**
- * _init_opt_clk - get a struct clk * for the hwmod's optional clocks
+ * _init_opt_clk - get a struct clk * for the the hwmod's optional clocks
  * @oh: struct omap_hwmod *
  *
  * Called from _init_clocks().  Populates the @oh omap_hwmod_opt_clk
@@ -2139,7 +2134,6 @@ static int of_dev_hwmod_lookup(struct device_node *np,
 		if (res == 0) {
 			*found = fc;
 			*index = i;
-			of_node_put(np0);
 			return 0;
 		}
 	}
@@ -3054,8 +3048,6 @@ int __init omap_hwmod_register_links(struct omap_hwmod_ocp_if **ois)
 	return 0;
 }
 
-static int __init omap_hwmod_setup_one(const char *oh_name);
-
 /**
  * _ensure_mpu_hwmod_is_setup - ensure the MPU SS hwmod is init'ed and set up
  * @oh: pointer to the hwmod currently being set up (usually not the MPU)
@@ -3086,7 +3078,7 @@ static void __init _ensure_mpu_hwmod_is_setup(struct omap_hwmod *oh)
  * registered omap_hwmod.  Also calls _setup() on each hwmod.  Returns
  * -EINVAL upon error or 0 upon success.
  */
-static int __init omap_hwmod_setup_one(const char *oh_name)
+int __init omap_hwmod_setup_one(const char *oh_name)
 {
 	struct omap_hwmod *oh;
 
@@ -3500,6 +3492,10 @@ static const struct omap_hwmod_reset omap24xx_reset_quirks[] = {
 	{ .match = "msdi", .len = 4, .reset = omap_msdi_reset, },
 };
 
+static const struct omap_hwmod_reset dra7_reset_quirks[] = {
+	{ .match = "pcie", .len = 4, .reset = dra7xx_pciess_reset, },
+};
+
 static const struct omap_hwmod_reset omap_reset_quirks[] = {
 	{ .match = "dss_core", .len = 8, .reset = omap_dss_reset, },
 	{ .match = "hdq1w", .len = 5, .reset = omap_hdq1w_reset, },
@@ -3534,6 +3530,10 @@ omap_hwmod_init_reset_quirks(struct device *dev, struct omap_hwmod *oh,
 		omap_hwmod_init_reset_quirk(dev, oh, data,
 					    omap24xx_reset_quirks,
 					    ARRAY_SIZE(omap24xx_reset_quirks));
+
+	if (soc_is_dra7xx())
+		omap_hwmod_init_reset_quirk(dev, oh, data, dra7_reset_quirks,
+					    ARRAY_SIZE(dra7_reset_quirks));
 
 	omap_hwmod_init_reset_quirk(dev, oh, data, omap_reset_quirks,
 				    ARRAY_SIZE(omap_reset_quirks));
@@ -3618,8 +3618,6 @@ int omap_hwmod_init_module(struct device *dev,
 		oh->flags |= HWMOD_SWSUP_SIDLE_ACT;
 	if (data->cfg->quirks & SYSC_QUIRK_SWSUP_MSTANDBY)
 		oh->flags |= HWMOD_SWSUP_MSTANDBY;
-	if (data->cfg->quirks & SYSC_QUIRK_CLKDM_NOAUTO)
-		oh->flags |= HWMOD_CLKDM_NOAUTO;
 
 	error = omap_hwmod_check_module(dev, oh, data, sysc_fields,
 					rev_offs, sysc_offs, syss_offs,
@@ -3679,9 +3677,6 @@ static void __init omap_hwmod_setup_earlycon_flags(void)
  */
 static int __init omap_hwmod_setup_all(void)
 {
-	if (!inited)
-		return 0;
-
 	_ensure_mpu_hwmod_is_setup(NULL);
 
 	omap_hwmod_for_each(_init, NULL);
@@ -3764,6 +3759,47 @@ int omap_hwmod_shutdown(struct omap_hwmod *oh)
 /*
  * IP block data retrieval functions
  */
+
+/**
+ * omap_hwmod_get_pwrdm - return pointer to this module's main powerdomain
+ * @oh: struct omap_hwmod *
+ *
+ * Return the powerdomain pointer associated with the OMAP module
+ * @oh's main clock.  If @oh does not have a main clk, return the
+ * powerdomain associated with the interface clock associated with the
+ * module's MPU port. (XXX Perhaps this should use the SDMA port
+ * instead?)  Returns NULL on error, or a struct powerdomain * on
+ * success.
+ */
+struct powerdomain *omap_hwmod_get_pwrdm(struct omap_hwmod *oh)
+{
+	struct clk *c;
+	struct omap_hwmod_ocp_if *oi;
+	struct clockdomain *clkdm;
+	struct clk_hw_omap *clk;
+
+	if (!oh)
+		return NULL;
+
+	if (oh->clkdm)
+		return oh->clkdm->pwrdm.ptr;
+
+	if (oh->_clk) {
+		c = oh->_clk;
+	} else {
+		oi = _find_mpu_rt_port(oh);
+		if (!oi)
+			return NULL;
+		c = oi->_clk;
+	}
+
+	clk = to_clk_hw_omap(__clk_get_hw(c));
+	clkdm = clk->clkdm;
+	if (!clkdm)
+		return NULL;
+
+	return clkdm->pwrdm.ptr;
+}
 
 /**
  * omap_hwmod_get_mpu_rt_va - return the module's base address (for the MPU)
@@ -3931,6 +3967,32 @@ ohsps_unlock:
 }
 
 /**
+ * omap_hwmod_get_context_loss_count - get lost context count
+ * @oh: struct omap_hwmod *
+ *
+ * Returns the context loss count of associated @oh
+ * upon success, or zero if no context loss data is available.
+ *
+ * On OMAP4, this queries the per-hwmod context loss register,
+ * assuming one exists.  If not, or on OMAP2/3, this queries the
+ * enclosing powerdomain context loss count.
+ */
+int omap_hwmod_get_context_loss_count(struct omap_hwmod *oh)
+{
+	struct powerdomain *pwrdm;
+	int ret = 0;
+
+	if (soc_ops.get_context_lost)
+		return soc_ops.get_context_lost(oh);
+
+	pwrdm = omap_hwmod_get_pwrdm(oh);
+	if (pwrdm)
+		ret = pwrdm_get_context_loss_count(pwrdm);
+
+	return ret;
+}
+
+/**
  * omap_hwmod_init - initialize the hwmod code
  *
  * Sets up some function pointers needed by the hwmod code to operate on the
@@ -3980,4 +4042,19 @@ void __init omap_hwmod_init(void)
 	_init_clkctrl_providers();
 
 	inited = true;
+}
+
+/**
+ * omap_hwmod_get_main_clk - get pointer to main clock name
+ * @oh: struct omap_hwmod *
+ *
+ * Returns the main clock name assocated with @oh upon success,
+ * or NULL if @oh is NULL.
+ */
+const char *omap_hwmod_get_main_clk(struct omap_hwmod *oh)
+{
+	if (!oh)
+		return NULL;
+
+	return oh->main_clk;
 }

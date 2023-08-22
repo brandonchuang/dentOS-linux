@@ -15,7 +15,6 @@
 #include <linux/sys_soc.h>
 
 #include "cqhci.h"
-#include "sdhci-cqhci.h"
 #include "sdhci-pltfm.h"
 
 /* CTL_CFG Registers */
@@ -148,9 +147,6 @@ struct sdhci_am654_data {
 	int drv_strength;
 	int strb_sel;
 	u32 flags;
-	u32 quirks;
-
-#define SDHCI_AM654_QUIRK_FORCE_CDTEST BIT(0)
 };
 
 struct sdhci_am654_driver_data {
@@ -369,22 +365,7 @@ static void sdhci_am654_write_b(struct sdhci_host *host, u8 val, int reg)
 					MAX_POWER_ON_TIMEOUT, false, host, val,
 					reg);
 		if (ret)
-			dev_info(mmc_dev(host->mmc), "Power on failed\n");
-	}
-}
-
-static void sdhci_am654_reset(struct sdhci_host *host, u8 mask)
-{
-	u8 ctrl;
-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
-	struct sdhci_am654_data *sdhci_am654 = sdhci_pltfm_priv(pltfm_host);
-
-	sdhci_and_cqhci_reset(host, mask);
-
-	if (sdhci_am654->quirks & SDHCI_AM654_QUIRK_FORCE_CDTEST) {
-		ctrl = sdhci_readb(host, SDHCI_HOST_CONTROL);
-		ctrl |= SDHCI_CTRL_CDTEST_INS | SDHCI_CTRL_CDTEST_EN;
-		sdhci_writeb(host, ctrl, SDHCI_HOST_CONTROL);
+			dev_warn(mmc_dev(host->mmc), "Power on failed\n");
 	}
 }
 
@@ -465,7 +446,7 @@ static struct sdhci_ops sdhci_am654_ops = {
 	.set_clock = sdhci_am654_set_clock,
 	.write_b = sdhci_am654_write_b,
 	.irq = sdhci_am654_cqhci_irq,
-	.reset = sdhci_and_cqhci_reset,
+	.reset = sdhci_reset,
 };
 
 static const struct sdhci_pltfm_data sdhci_am654_pdata = {
@@ -495,7 +476,7 @@ static struct sdhci_ops sdhci_j721e_8bit_ops = {
 	.set_clock = sdhci_am654_set_clock,
 	.write_b = sdhci_am654_write_b,
 	.irq = sdhci_am654_cqhci_irq,
-	.reset = sdhci_and_cqhci_reset,
+	.reset = sdhci_reset,
 };
 
 static const struct sdhci_pltfm_data sdhci_j721e_8bit_pdata = {
@@ -519,7 +500,7 @@ static struct sdhci_ops sdhci_j721e_4bit_ops = {
 	.set_clock = sdhci_j721e_4bit_set_clock,
 	.write_b = sdhci_am654_write_b,
 	.irq = sdhci_am654_cqhci_irq,
-	.reset = sdhci_am654_reset,
+	.reset = sdhci_reset,
 };
 
 static const struct sdhci_pltfm_data sdhci_j721e_4bit_pdata = {
@@ -555,8 +536,9 @@ static const struct cqhci_host_ops sdhci_am654_cqhci_ops = {
 static int sdhci_am654_cqe_add_host(struct sdhci_host *host)
 {
 	struct cqhci_host *cq_host;
+	int ret;
 
-	cq_host = devm_kzalloc(mmc_dev(host->mmc), sizeof(struct cqhci_host),
+	cq_host = devm_kzalloc(host->mmc->parent, sizeof(struct cqhci_host),
 			       GFP_KERNEL);
 	if (!cq_host)
 		return -ENOMEM;
@@ -568,7 +550,9 @@ static int sdhci_am654_cqe_add_host(struct sdhci_host *host)
 
 	host->mmc->caps2 |= MMC_CAP2_CQE;
 
-	return cqhci_init(cq_host, host->mmc, 1);
+	ret = cqhci_init(cq_host, host->mmc, 1);
+
+	return ret;
 }
 
 static int sdhci_am654_get_otap_delay(struct sdhci_host *host,
@@ -735,9 +719,6 @@ static int sdhci_am654_get_of_property(struct platform_device *pdev,
 	device_property_read_u32(dev, "ti,clkbuf-sel",
 				 &sdhci_am654->clkbuf_sel);
 
-	if (device_property_read_bool(dev, "ti,fails-without-test-cd"))
-		sdhci_am654->quirks |= SDHCI_AM654_QUIRK_FORCE_CDTEST;
-
 	sdhci_get_of_property(pdev);
 
 	return 0;
@@ -754,18 +735,6 @@ static const struct of_device_id sdhci_am654_of_match[] = {
 	},
 	{
 		.compatible = "ti,j721e-sdhci-4bit",
-		.data = &sdhci_j721e_4bit_drvdata,
-	},
-	{
-		.compatible = "ti,am64-sdhci-8bit",
-		.data = &sdhci_j721e_8bit_drvdata,
-	},
-	{
-		.compatible = "ti,am64-sdhci-4bit",
-		.data = &sdhci_j721e_4bit_drvdata,
-	},
-	{
-		.compatible = "ti,am62-sdhci",
 		.data = &sdhci_j721e_4bit_drvdata,
 	},
 	{ /* sentinel */ }
@@ -812,9 +781,11 @@ static int sdhci_am654_probe(struct platform_device *pdev)
 
 	/* Clocks are enabled using pm_runtime */
 	pm_runtime_enable(dev);
-	ret = pm_runtime_resume_and_get(dev);
-	if (ret)
+	ret = pm_runtime_get_sync(dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(dev);
 		goto pm_runtime_disable;
+	}
 
 	base = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(base)) {
@@ -836,7 +807,7 @@ static int sdhci_am654_probe(struct platform_device *pdev)
 
 	ret = mmc_of_parse(host->mmc);
 	if (ret) {
-		dev_err_probe(dev, ret, "parsing dt failed\n");
+		dev_err(dev, "parsing dt failed (%d)\n", ret);
 		goto pm_runtime_put;
 	}
 

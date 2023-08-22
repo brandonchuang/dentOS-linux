@@ -12,16 +12,26 @@
 
 static int check_cpu_dscr_default(char *file, unsigned long val)
 {
-	unsigned long cpu_dscr;
-	int err;
+	char buf[10];
+	int fd, rc;
 
-	err = read_ulong(file, &cpu_dscr, 16);
-	if (err)
-		return err;
+	fd = open(file, O_RDWR);
+	if (fd == -1) {
+		perror("open() failed");
+		return 1;
+	}
 
-	if (cpu_dscr != val) {
+	rc = read(fd, buf, sizeof(buf));
+	if (rc == -1) {
+		perror("read() failed");
+		return 1;
+	}
+	close(fd);
+
+	buf[rc] = '\0';
+	if (strtol(buf, NULL, 16) != val) {
 		printf("DSCR match failed: %ld (system) %ld (cpu)\n",
-					val, cpu_dscr);
+					val, strtol(buf, NULL, 16));
 		return 1;
 	}
 	return 0;
@@ -55,10 +65,8 @@ static int check_all_cpu_dscr_defaults(unsigned long val)
 		if (access(file, F_OK))
 			continue;
 
-		if (check_cpu_dscr_default(file, val)) {
-			closedir(sysfs);
+		if (check_cpu_dscr_default(file, val))
 			return 1;
-		}
 	}
 	closedir(sysfs);
 	return 0;

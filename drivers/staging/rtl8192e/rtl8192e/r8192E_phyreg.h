@@ -42,6 +42,8 @@
 #define CCK_TXAGC		0x348
 
 /* Mac block on/off control register */
+#define MacBlkCtrl			0x403
+
 #define rFPGA0_RFMOD			0x800 /* RF mode & CCK TxSC */
 #define rFPGA0_TxInfo			0x804
 #define rFPGA0_PSDFunction		0x808

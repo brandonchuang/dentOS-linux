@@ -17,7 +17,7 @@
  * - scnprintf and vscnprintf
  */
 
-#include <linux/stdarg.h>
+#include <stdarg.h>
 #include <linux/build_bug.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
@@ -41,7 +41,6 @@
 #include <linux/siphash.h>
 #include <linux/compiler.h>
 #include <linux/property.h>
-#include <linux/notifier.h>
 #ifdef CONFIG_BLOCK
 #include <linux/blkdev.h>
 #endif
@@ -50,38 +49,9 @@
 
 #include <asm/page.h>		/* for PAGE_SIZE */
 #include <asm/byteorder.h>	/* cpu_to_le16 */
-#include <asm/unaligned.h>
 
 #include <linux/string_helpers.h>
 #include "kstrtox.h"
-
-/* Disable pointer hashing if requested */
-bool no_hash_pointers __ro_after_init;
-EXPORT_SYMBOL_GPL(no_hash_pointers);
-
-static noinline unsigned long long simple_strntoull(const char *startp, size_t max_chars, char **endp, unsigned int base)
-{
-	const char *cp;
-	unsigned long long result = 0ULL;
-	size_t prefix_chars;
-	unsigned int rv;
-
-	cp = _parse_integer_fixup_radix(startp, &base);
-	prefix_chars = cp - startp;
-	if (prefix_chars < max_chars) {
-		rv = _parse_integer_limit(cp, base, &result, max_chars - prefix_chars);
-		/* FIXME */
-		cp += (rv & ~KSTRTOX_OVERFLOW);
-	} else {
-		/* Field too short for prefix + digit, skip over without converting */
-		cp = startp + max_chars;
-	}
-
-	if (endp)
-		*endp = (char *)cp;
-
-	return result;
-}
 
 /**
  * simple_strtoull - convert a string to an unsigned long long
@@ -91,10 +61,20 @@ static noinline unsigned long long simple_strntoull(const char *startp, size_t m
  *
  * This function has caveats. Please use kstrtoull instead.
  */
-noinline
 unsigned long long simple_strtoull(const char *cp, char **endp, unsigned int base)
 {
-	return simple_strntoull(cp, INT_MAX, endp, base);
+	unsigned long long result;
+	unsigned int rv;
+
+	cp = _parse_integer_fixup_radix(cp, &base);
+	rv = _parse_integer(cp, base, &result);
+	/* FIXME */
+	cp += (rv & ~KSTRTOX_OVERFLOW);
+
+	if (endp)
+		*endp = (char *)cp;
+
+	return result;
 }
 EXPORT_SYMBOL(simple_strtoull);
 
@@ -129,21 +109,6 @@ long simple_strtol(const char *cp, char **endp, unsigned int base)
 }
 EXPORT_SYMBOL(simple_strtol);
 
-static long long simple_strntoll(const char *cp, size_t max_chars, char **endp,
-				 unsigned int base)
-{
-	/*
-	 * simple_strntoull() safely handles receiving max_chars==0 in the
-	 * case cp[0] == '-' && max_chars == 1.
-	 * If max_chars == 0 we can drop through and pass it to simple_strntoull()
-	 * and the content of *cp is irrelevant.
-	 */
-	if (*cp == '-' && max_chars > 0)
-		return -simple_strntoull(cp + 1, max_chars - 1, endp, base);
-
-	return simple_strntoull(cp, max_chars, endp, base);
-}
-
 /**
  * simple_strtoll - convert a string to a signed long long
  * @cp: The start of the string
@@ -154,7 +119,10 @@ static long long simple_strntoll(const char *cp, size_t max_chars, char **endp,
  */
 long long simple_strtoll(const char *cp, char **endp, unsigned int base)
 {
-	return simple_strntoll(cp, INT_MAX, endp, base);
+	if (*cp == '-')
+		return -simple_strtoull(cp + 1, endp, base);
+
+	return simple_strtoull(cp, endp, base);
 }
 EXPORT_SYMBOL(simple_strtoll);
 
@@ -413,9 +381,8 @@ int num_to_str(char *buf, int size, unsigned long long num, unsigned int width)
 #define SMALL	32		/* use lowercase in hex (must be 32 == 0x20) */
 #define SPECIAL	64		/* prefix hex with "0x", octal with "0" */
 
-static_assert(SIGN == 1);
 static_assert(ZEROPAD == ('0' - ' '));
-static_assert(SMALL == ('a' ^ 'A'));
+static_assert(SMALL == ' ');
 
 enum format_type {
 	FORMAT_TYPE_NONE, /* Just a string part */
@@ -751,37 +718,59 @@ static int __init debug_boot_weak_hash_enable(char *str)
 }
 early_param("debug_boot_weak_hash", debug_boot_weak_hash_enable);
 
-static bool filled_random_ptr_key __read_mostly;
+static DEFINE_STATIC_KEY_TRUE(not_filled_random_ptr_key);
 static siphash_key_t ptr_key __read_mostly;
 
-static int fill_ptr_key(struct notifier_block *nb, unsigned long action, void *data)
+static void enable_ptr_key_workfn(struct work_struct *work)
 {
 	get_random_bytes(&ptr_key, sizeof(ptr_key));
-
-	/* Pairs with smp_rmb() before reading ptr_key. */
-	smp_wmb();
-	WRITE_ONCE(filled_random_ptr_key, true);
-	return NOTIFY_DONE;
+	/* Needs to run from preemptible context */
+	static_branch_disable(&not_filled_random_ptr_key);
 }
 
-static int __init vsprintf_init_hashval(void)
+static DECLARE_WORK(enable_ptr_key_work, enable_ptr_key_workfn);
+
+static void fill_random_ptr_key(struct random_ready_callback *unused)
 {
-	static struct notifier_block fill_ptr_key_nb = { .notifier_call = fill_ptr_key };
-	execute_with_initialized_rng(&fill_ptr_key_nb);
-	return 0;
+	/* This may be in an interrupt handler. */
+	queue_work(system_unbound_wq, &enable_ptr_key_work);
 }
-subsys_initcall(vsprintf_init_hashval)
+
+static struct random_ready_callback random_ready = {
+	.func = fill_random_ptr_key
+};
+
+static int __init initialize_ptr_random(void)
+{
+	int key_size = sizeof(ptr_key);
+	int ret;
+
+	/* Use hw RNG if available. */
+	if (get_random_bytes_arch(&ptr_key, key_size) == key_size) {
+		static_branch_disable(&not_filled_random_ptr_key);
+		return 0;
+	}
+
+	ret = add_random_ready_callback(&random_ready);
+	if (!ret) {
+		return 0;
+	} else if (ret == -EALREADY) {
+		/* This is in preemptible context */
+		enable_ptr_key_workfn(&enable_ptr_key_work);
+		return 0;
+	}
+
+	return ret;
+}
+early_initcall(initialize_ptr_random);
 
 /* Maps a pointer to a 32 bit unique identifier. */
 static inline int __ptr_to_hashval(const void *ptr, unsigned long *hashval_out)
 {
 	unsigned long hashval;
 
-	if (!READ_ONCE(filled_random_ptr_key))
-		return -EBUSY;
-
-	/* Pairs with smp_wmb() after writing ptr_key. */
-	smp_rmb();
+	if (static_branch_unlikely(&not_filled_random_ptr_key))
+		return -EAGAIN;
 
 #ifdef CONFIG_64BIT
 	hashval = (unsigned long)siphash_1u64((u64)ptr, &ptr_key);
@@ -832,19 +821,6 @@ static char *ptr_to_id(char *buf, char *end, const void *ptr,
 	return pointer_string(buf, end, (const void *)hashval, spec);
 }
 
-static char *default_pointer(char *buf, char *end, const void *ptr,
-			     struct printf_spec spec)
-{
-	/*
-	 * default is to _not_ leak addresses, so hash before printing,
-	 * unless no_hash_pointers is specified on the command line.
-	 */
-	if (unlikely(no_hash_pointers))
-		return pointer_string(buf, end, ptr, spec);
-
-	return ptr_to_id(buf, end, ptr, spec);
-}
-
 int kptr_restrict __read_mostly;
 
 static noinline_for_stack
@@ -854,7 +830,7 @@ char *restricted_pointer(char *buf, char *end, const void *ptr,
 	switch (kptr_restrict) {
 	case 0:
 		/* Handle as %p, hash and do _not_ leak addresses. */
-		return default_pointer(buf, end, ptr, spec);
+		return ptr_to_id(buf, end, ptr, spec);
 	case 1: {
 		const struct cred *cred;
 
@@ -862,7 +838,7 @@ char *restricted_pointer(char *buf, char *end, const void *ptr,
 		 * kptr_restrict==1 cannot be used in IRQ context
 		 * because its test for CAP_SYSLOG would be meaningless.
 		 */
-		if (in_hardirq() || in_serving_softirq() || in_nmi()) {
+		if (in_irq() || in_serving_softirq() || in_nmi()) {
 			if (spec.field_width == -1)
 				spec.field_width = 2 * sizeof(ptr);
 			return error_string(buf, end, "pK-error", spec);
@@ -990,12 +966,8 @@ char *symbol_string(char *buf, char *end, void *ptr,
 	value = (unsigned long)ptr;
 
 #ifdef CONFIG_KALLSYMS
-	if (*fmt == 'B' && fmt[1] == 'b')
-		sprint_backtrace_build_id(sym, value);
-	else if (*fmt == 'B')
+	if (*fmt == 'B')
 		sprint_backtrace(sym, value);
-	else if (*fmt == 'S' && (fmt[1] == 'b' || (fmt[1] == 'R' && fmt[2] == 'b')))
-		sprint_symbol_build_id(sym, value);
 	else if (*fmt != 's')
 		sprint_symbol(sym, value);
 	else
@@ -1190,7 +1162,7 @@ char *hex_string(char *buf, char *end, u8 *addr, struct printf_spec spec,
 }
 
 static noinline_for_stack
-char *bitmap_string(char *buf, char *end, const unsigned long *bitmap,
+char *bitmap_string(char *buf, char *end, unsigned long *bitmap,
 		    struct printf_spec spec, const char *fmt)
 {
 	const int CHUNKSZ = 32;
@@ -1234,17 +1206,24 @@ char *bitmap_string(char *buf, char *end, const unsigned long *bitmap,
 }
 
 static noinline_for_stack
-char *bitmap_list_string(char *buf, char *end, const unsigned long *bitmap,
+char *bitmap_list_string(char *buf, char *end, unsigned long *bitmap,
 			 struct printf_spec spec, const char *fmt)
 {
 	int nr_bits = max_t(int, spec.field_width, 0);
+	/* current bit is 'cur', most recently seen range is [rbot, rtop] */
+	int cur, rbot, rtop;
 	bool first = true;
-	int rbot, rtop;
 
 	if (check_pointer(&buf, end, bitmap, spec))
 		return buf;
 
-	for_each_set_bitrange(rbot, rtop, bitmap, nr_bits) {
+	rbot = cur = find_first_bit(bitmap, nr_bits);
+	while (cur < nr_bits) {
+		rtop = cur;
+		cur = find_next_bit(bitmap, nr_bits, cur + 1);
+		if (cur < nr_bits && cur <= rtop + 1)
+			continue;
+
 		if (!first) {
 			if (buf < end)
 				*buf = ',';
@@ -1253,12 +1232,15 @@ char *bitmap_list_string(char *buf, char *end, const unsigned long *bitmap,
 		first = false;
 
 		buf = number(buf, end, rbot, default_dec_spec);
-		if (rtop == rbot + 1)
-			continue;
+		if (rbot < rtop) {
+			if (buf < end)
+				*buf = '-';
+			buf++;
 
-		if (buf < end)
-			*buf = '-';
-		buf = number(++buf, end, rtop - 1, default_dec_spec);
+			buf = number(buf, end, rtop, default_dec_spec);
+		}
+
+		rbot = cur;
 	}
 	return buf;
 }
@@ -1283,7 +1265,7 @@ char *mac_address_string(char *buf, char *end, u8 *addr,
 
 	case 'R':
 		reversed = true;
-		fallthrough;
+		/* fall through */
 
 	default:
 		separator = ':';
@@ -1700,7 +1682,7 @@ char *uuid_string(char *buf, char *end, const u8 *addr,
 	switch (*(++fmt)) {
 	case 'L':
 		uc = true;
-		fallthrough;
+		/* fall through */
 	case 'l':
 		index = guid_index;
 		break;
@@ -1749,44 +1731,6 @@ char *netdev_bits(char *buf, char *end, const void *addr,
 	}
 
 	return special_hex_number(buf, end, num, size);
-}
-
-static noinline_for_stack
-char *fourcc_string(char *buf, char *end, const u32 *fourcc,
-		    struct printf_spec spec, const char *fmt)
-{
-	char output[sizeof("0123 little-endian (0x01234567)")];
-	char *p = output;
-	unsigned int i;
-	u32 orig, val;
-
-	if (fmt[1] != 'c' || fmt[2] != 'c')
-		return error_string(buf, end, "(%p4?)", spec);
-
-	if (check_pointer(&buf, end, fourcc, spec))
-		return buf;
-
-	orig = get_unaligned(fourcc);
-	val = orig & ~BIT(31);
-
-	for (i = 0; i < sizeof(u32); i++) {
-		unsigned char c = val >> (i * 8);
-
-		/* Print non-control ASCII characters as-is, dot otherwise */
-		*p++ = isascii(c) && isprint(c) ? c : '.';
-	}
-
-	*p++ = ' ';
-	strcpy(p, orig & BIT(31) ? "big-endian" : "little-endian");
-	p += strlen(p);
-
-	*p++ = ' ';
-	*p++ = '(';
-	p = special_hex_number(p, output + sizeof(output) - 2, orig, sizeof(u32));
-	*p++ = ')';
-	*p = '\0';
-
-	return string(buf, end, output, spec);
 }
 
 static noinline_for_stack
@@ -1854,8 +1798,7 @@ char *rtc_str(char *buf, char *end, const struct rtc_time *tm,
 	      struct printf_spec spec, const char *fmt)
 {
 	bool have_t = true, have_d = true;
-	bool raw = false, iso8601_separator = true;
-	bool found = true;
+	bool raw = false;
 	int count = 2;
 
 	if (check_pointer(&buf, end, tm, spec))
@@ -1872,25 +1815,14 @@ char *rtc_str(char *buf, char *end, const struct rtc_time *tm,
 		break;
 	}
 
-	do {
-		switch (fmt[count++]) {
-		case 'r':
-			raw = true;
-			break;
-		case 's':
-			iso8601_separator = false;
-			break;
-		default:
-			found = false;
-			break;
-		}
-	} while (found);
+	raw = fmt[count] == 'r';
 
 	if (have_d)
 		buf = date_str(buf, end, tm, raw);
 	if (have_d && have_t) {
+		/* Respect ISO 8601 */
 		if (buf < end)
-			*buf = iso8601_separator ? 'T' : ' ';
+			*buf = 'T';
 		buf++;
 	}
 	if (have_t)
@@ -1984,74 +1916,6 @@ char *format_flags(char *buf, char *end, unsigned long flags,
 	return buf;
 }
 
-struct page_flags_fields {
-	int width;
-	int shift;
-	int mask;
-	const struct printf_spec *spec;
-	const char *name;
-};
-
-static const struct page_flags_fields pff[] = {
-	{SECTIONS_WIDTH, SECTIONS_PGSHIFT, SECTIONS_MASK,
-	 &default_dec_spec, "section"},
-	{NODES_WIDTH, NODES_PGSHIFT, NODES_MASK,
-	 &default_dec_spec, "node"},
-	{ZONES_WIDTH, ZONES_PGSHIFT, ZONES_MASK,
-	 &default_dec_spec, "zone"},
-	{LAST_CPUPID_WIDTH, LAST_CPUPID_PGSHIFT, LAST_CPUPID_MASK,
-	 &default_flag_spec, "lastcpupid"},
-	{KASAN_TAG_WIDTH, KASAN_TAG_PGSHIFT, KASAN_TAG_MASK,
-	 &default_flag_spec, "kasantag"},
-};
-
-static
-char *format_page_flags(char *buf, char *end, unsigned long flags)
-{
-	unsigned long main_flags = flags & PAGEFLAGS_MASK;
-	bool append = false;
-	int i;
-
-	buf = number(buf, end, flags, default_flag_spec);
-	if (buf < end)
-		*buf = '(';
-	buf++;
-
-	/* Page flags from the main area. */
-	if (main_flags) {
-		buf = format_flags(buf, end, main_flags, pageflag_names);
-		append = true;
-	}
-
-	/* Page flags from the fields area */
-	for (i = 0; i < ARRAY_SIZE(pff); i++) {
-		/* Skip undefined fields. */
-		if (!pff[i].width)
-			continue;
-
-		/* Format: Flag Name + '=' (equals sign) + Number + '|' (separator) */
-		if (append) {
-			if (buf < end)
-				*buf = '|';
-			buf++;
-		}
-
-		buf = string(buf, end, pff[i].name, default_str_spec);
-		if (buf < end)
-			*buf = '=';
-		buf++;
-		buf = number(buf, end, (flags >> pff[i].shift) & pff[i].mask,
-			     *pff[i].spec);
-
-		append = true;
-	}
-	if (buf < end)
-		*buf = ')';
-	buf++;
-
-	return buf;
-}
-
 static noinline_for_stack
 char *flags_string(char *buf, char *end, void *flags_ptr,
 		   struct printf_spec spec, const char *fmt)
@@ -2064,7 +1928,11 @@ char *flags_string(char *buf, char *end, void *flags_ptr,
 
 	switch (fmt[1]) {
 	case 'p':
-		return format_page_flags(buf, end, *(unsigned long *)flags_ptr);
+		flags = *(unsigned long *)flags_ptr;
+		/* Remove zone id */
+		flags &= (1UL << NR_PAGEFLAGS) - 1;
+		names = pageflag_names;
+		break;
 	case 'v':
 		flags = *(unsigned long *)flags_ptr;
 		names = vmaflag_names;
@@ -2222,34 +2090,6 @@ char *fwnode_string(char *buf, char *end, struct fwnode_handle *fwnode,
 	return widen_string(buf, buf - buf_start, end, spec);
 }
 
-int __init no_hash_pointers_enable(char *str)
-{
-	if (no_hash_pointers)
-		return 0;
-
-	no_hash_pointers = true;
-
-	pr_warn("**********************************************************\n");
-	pr_warn("**   NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE   **\n");
-	pr_warn("**                                                      **\n");
-	pr_warn("** This system shows unhashed kernel memory addresses   **\n");
-	pr_warn("** via the console, logs, and other interfaces. This    **\n");
-	pr_warn("** might reduce the security of your system.            **\n");
-	pr_warn("**                                                      **\n");
-	pr_warn("** If you see this message and you are not debugging    **\n");
-	pr_warn("** the kernel, report this immediately to your system   **\n");
-	pr_warn("** administrator!                                       **\n");
-	pr_warn("**                                                      **\n");
-	pr_warn("**   NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE   **\n");
-	pr_warn("**********************************************************\n");
-
-	return 0;
-}
-early_param("no_hash_pointers", no_hash_pointers_enable);
-
-/* Used for Rust formatting ('%pA'). */
-char *rust_fmt_argument(char *buf, char *end, void *ptr);
-
 /*
  * Show a '%p' thing.  A kernel extension is that the '%p' is followed
  * by an extra set of alphanumeric characters that are extended format
@@ -2263,11 +2103,9 @@ char *rust_fmt_argument(char *buf, char *end, void *ptr);
  * - 'S' For symbolic direct pointers (or function descriptors) with offset
  * - 's' For symbolic direct pointers (or function descriptors) without offset
  * - '[Ss]R' as above with __builtin_extract_return_addr() translation
- * - 'S[R]b' as above with module build ID (for use in backtraces)
  * - '[Ff]' %pf and %pF were obsoleted and later removed in favor of
  *	    %ps and %pS. Be careful when re-using these specifiers.
  * - 'B' For backtraced symbolic direct pointers with offset
- * - 'Bb' as above with module build ID (for use in backtraces)
  * - 'R' For decoded struct resource, e.g., [mem 0x0-0x1f 64bit pref]
  * - 'r' For raw struct resource, e.g., [mem 0x0-0x1f flags 0x201]
  * - 'b[l]' For a bitmap, the number of bits is determined by the field
@@ -2322,11 +2160,8 @@ char *rust_fmt_argument(char *buf, char *end, void *ptr);
  *       Implements a "recursive vsnprintf".
  *       Do not use this feature without some mechanism to verify the
  *       correctness of the format string and va_list arguments.
- * - 'K' For a kernel pointer that should be hidden from unprivileged users.
- *       Use only for procfs, sysfs and similar files, not printk(); please
- *       read the documentation (path below) first.
+ * - 'K' For a kernel pointer that should be hidden from unprivileged users
  * - 'NF' For a netdev_features_t
- * - '4cc' V4L2 or DRM FourCC code, with endianness and raw numerical value.
  * - 'h[CDN]' For a variable-length buffer, it prints it as a hex string with
  *            a certain separator (' ' by default):
  *              C colon
@@ -2339,7 +2174,7 @@ char *rust_fmt_argument(char *buf, char *end, void *ptr);
  * - 'd[234]' For a dentry name (optionally 2-4 last components)
  * - 'D[234]' Same as 'd' but for a struct file
  * - 'g' For block_device name (gendisk + partition number)
- * - 't[RT][dt][r][s]' For time and date as represented by:
+ * - 't[RT][dt][r]' For time and date as represented by:
  *      R    struct rtc_time
  *      T    time64_t
  * - 'C' For a clock, it prints the name (Common Clock Framework) or address
@@ -2364,8 +2199,7 @@ char *rust_fmt_argument(char *buf, char *end, void *ptr);
  *		Without an option prints the full name of the node
  *		f full name
  *		P node name, including a possible unit address
- * - 'x' For printing the address unmodified. Equivalent to "%lx".
- *       Please read the documentation (path below) before using!
+ * - 'x' For printing the address. Equivalent to "%lx".
  * - '[ku]s' For a BPF/tracing related format specifier, e.g. used out of
  *           bpf_trace_printk() where [ku] prefix specifies either kernel (k)
  *           or user (u) memory to probe, and:
@@ -2376,10 +2210,6 @@ char *rust_fmt_argument(char *buf, char *end, void *ptr);
  *
  * Note: The default behaviour (unadorned %p) is to hash the address,
  * rendering it useful as a unique identifier.
- *
- * There is also a '%pA' format specifier, but it is only intended to be used
- * from Rust code to format core::fmt::Arguments. Do *not* use it from C.
- * See rust/kernel/print.rs for details.
  */
 static noinline_for_stack
 char *pointer(const char *fmt, char *buf, char *end, void *ptr,
@@ -2389,7 +2219,7 @@ char *pointer(const char *fmt, char *buf, char *end, void *ptr,
 	case 'S':
 	case 's':
 		ptr = dereference_symbol_descriptor(ptr);
-		fallthrough;
+		/* fall through */
 	case 'B':
 		return symbol_string(buf, end, ptr, spec, fmt);
 	case 'R':
@@ -2429,8 +2259,6 @@ char *pointer(const char *fmt, char *buf, char *end, void *ptr,
 		return restricted_pointer(buf, end, ptr, spec);
 	case 'N':
 		return netdev_bits(buf, end, ptr, spec, fmt);
-	case '4':
-		return fourcc_string(buf, end, ptr, spec, fmt);
 	case 'a':
 		return address_val(buf, end, ptr, spec, fmt);
 	case 'd':
@@ -2452,18 +2280,12 @@ char *pointer(const char *fmt, char *buf, char *end, void *ptr,
 		return device_node_string(buf, end, ptr, spec, fmt + 1);
 	case 'f':
 		return fwnode_string(buf, end, ptr, spec, fmt + 1);
-	case 'A':
-		if (!IS_ENABLED(CONFIG_RUST)) {
-			WARN_ONCE(1, "Please remove %%pA from non-Rust code\n");
-			return error_string(buf, end, "(%pA?)", spec);
-		}
-		return rust_fmt_argument(buf, end, ptr);
 	case 'x':
 		return pointer_string(buf, end, ptr, spec);
 	case 'e':
 		/* %pe with a non-ERR_PTR gets treated as plain %p */
 		if (!IS_ERR(ptr))
-			return default_pointer(buf, end, ptr, spec);
+			break;
 		return err_ptr(buf, end, ptr, spec);
 	case 'u':
 	case 'k':
@@ -2473,9 +2295,10 @@ char *pointer(const char *fmt, char *buf, char *end, void *ptr,
 		default:
 			return error_string(buf, end, "(einval)", spec);
 		}
-	default:
-		return default_pointer(buf, end, ptr, spec);
 	}
+
+	/* default is to _not_ leak addresses, hash before printing */
+	return ptr_to_id(buf, end, ptr, spec);
 }
 
 /*
@@ -2627,7 +2450,7 @@ qualifier:
 
 	case 'x':
 		spec->flags |= SMALL;
-		fallthrough;
+		/* fall through */
 
 	case 'X':
 		spec->base = 16;
@@ -2636,7 +2459,6 @@ qualifier:
 	case 'd':
 	case 'i':
 		spec->flags |= SIGN;
-		break;
 	case 'u':
 		break;
 
@@ -2646,7 +2468,7 @@ qualifier:
 		 * utility, treat it as any other invalid or
 		 * unsupported format specifier.
 		 */
-		fallthrough;
+		/* fall through */
 
 	default:
 		WARN_ONCE(1, "Please remove unsupported %%%c in format string\n", *fmt);
@@ -2896,15 +2718,13 @@ int vscnprintf(char *buf, size_t size, const char *fmt, va_list args)
 {
 	int i;
 
-	if (unlikely(!size))
-		return 0;
-
 	i = vsnprintf(buf, size, fmt, args);
 
 	if (likely(i < size))
 		return i;
-
-	return size - 1;
+	if (size != 0)
+		return size - 1;
+	return 0;
 }
 EXPORT_SYMBOL(vscnprintf);
 
@@ -3282,6 +3102,8 @@ int bstr_printf(char *buf, size_t size, const char *fmt, const u32 *bin_buf)
 			switch (*fmt) {
 			case 'S':
 			case 's':
+			case 'F':
+			case 'f':
 			case 'x':
 			case 'K':
 			case 'e':
@@ -3424,7 +3246,7 @@ int vsscanf(const char *buf, const char *fmt, va_list args)
 
 	while (*fmt) {
 		/* skip any white space in format */
-		/* white space in format matches any amount of
+		/* white space in format matchs any amount of
 		 * white space, including none, in the input.
 		 */
 		if (isspace(*fmt)) {
@@ -3557,7 +3379,7 @@ int vsscanf(const char *buf, const char *fmt, va_list args)
 				++fmt;
 
 			for ( ; *fmt && *fmt != ']'; ++fmt, ++len)
-				__set_bit((u8)*fmt, set);
+				set_bit((u8)*fmt, set);
 
 			/* no ']' or no character set found */
 			if (!*fmt || !len)
@@ -3567,7 +3389,7 @@ int vsscanf(const char *buf, const char *fmt, va_list args)
 			if (negate) {
 				bitmap_complement(set, set, 256);
 				/* exclude null '\0' byte */
-				__clear_bit(0, set);
+				clear_bit(0, set);
 			}
 
 			/* match must be non-empty */
@@ -3589,10 +3411,10 @@ int vsscanf(const char *buf, const char *fmt, va_list args)
 			break;
 		case 'i':
 			base = 0;
-			fallthrough;
+			/* fall through */
 		case 'd':
 			is_sign = true;
-			fallthrough;
+			/* fall through */
 		case 'u':
 			break;
 		case '%':
@@ -3611,12 +3433,8 @@ int vsscanf(const char *buf, const char *fmt, va_list args)
 		str = skip_spaces(str);
 
 		digit = *str;
-		if (is_sign && digit == '-') {
-			if (field_width == 1)
-				break;
-
+		if (is_sign && digit == '-')
 			digit = *(str + 1);
-		}
 
 		if (!digit
 		    || (base == 16 && !isxdigit(digit))
@@ -3626,13 +3444,25 @@ int vsscanf(const char *buf, const char *fmt, va_list args)
 			break;
 
 		if (is_sign)
-			val.s = simple_strntoll(str,
-						field_width >= 0 ? field_width : INT_MAX,
-						&next, base);
+			val.s = qualifier != 'L' ?
+				simple_strtol(str, &next, base) :
+				simple_strtoll(str, &next, base);
 		else
-			val.u = simple_strntoull(str,
-						 field_width >= 0 ? field_width : INT_MAX,
-						 &next, base);
+			val.u = qualifier != 'L' ?
+				simple_strtoul(str, &next, base) :
+				simple_strtoull(str, &next, base);
+
+		if (field_width > 0 && next - str > field_width) {
+			if (base == 0)
+				_parse_integer_fixup_radix(str, &base);
+			while (next - str > field_width) {
+				if (is_sign)
+					val.s = div_s64(val.s, base);
+				else
+					val.u = div_u64(val.u, base);
+				--next;
+			}
+		}
 
 		switch (qualifier) {
 		case 'H':	/* that's 'hh' in format */

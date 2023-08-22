@@ -84,6 +84,18 @@ ia64_do_page_fault (unsigned long address, unsigned long isr, struct pt_regs *re
 	if (faulthandler_disabled() || !mm)
 		goto no_context;
 
+#ifdef CONFIG_VIRTUAL_MEM_MAP
+	/*
+	 * If fault is in region 5 and we are in the kernel, we may already
+	 * have the mmap_lock (pfn_valid macro is called during mmap). There
+	 * is no vma for region 5 addr's anyway, so skip getting the semaphore
+	 * and go directly to the exception handling code.
+	 */
+
+	if ((REGION_NUMBER(address) == 5) && !user_mode(regs))
+		goto bad_area_no_up;
+#endif
+
 	/*
 	 * This is to handle the kprobes on user space access instructions
 	 */
@@ -136,14 +148,7 @@ retry:
 	 */
 	fault = handle_mm_fault(vma, address, flags, regs);
 
-	if (fault_signal_pending(fault, regs)) {
-		if (!user_mode(regs))
-			goto no_context;
-		return;
-	}
-
-	/* The fault is fully completed (including releasing mmap lock) */
-	if (fault & VM_FAULT_COMPLETED)
+	if (fault_signal_pending(fault, regs))
 		return;
 
 	if (unlikely(fault & VM_FAULT_ERROR)) {
@@ -163,15 +168,17 @@ retry:
 		BUG();
 	}
 
-	if (fault & VM_FAULT_RETRY) {
-		flags |= FAULT_FLAG_TRIED;
+	if (flags & FAULT_FLAG_ALLOW_RETRY) {
+		if (fault & VM_FAULT_RETRY) {
+			flags |= FAULT_FLAG_TRIED;
 
-		/* No need to mmap_read_unlock(mm) as we would
-		 * have already released it in __lock_page_or_retry
-		 * in mm/filemap.c.
-		 */
+			 /* No need to mmap_read_unlock(mm) as we would
+			 * have already released it in __lock_page_or_retry
+			 * in mm/filemap.c.
+			 */
 
-		goto retry;
+			goto retry;
+		}
 	}
 
 	mmap_read_unlock(mm);
@@ -206,6 +213,9 @@ retry:
 
   bad_area:
 	mmap_read_unlock(mm);
+#ifdef CONFIG_VIRTUAL_MEM_MAP
+  bad_area_no_up:
+#endif
 	if ((isr & IA64_ISR_SP)
 	    || ((isr & IA64_ISR_NA) && (isr & IA64_ISR_CODE_MASK) == IA64_ISR_CODE_LFETCH))
 	{
@@ -264,7 +274,7 @@ retry:
 		regs = NULL;
 	bust_spinlocks(0);
 	if (regs)
-		make_task_dead(SIGKILL);
+		do_exit(SIGKILL);
 	return;
 
   out_of_memory:

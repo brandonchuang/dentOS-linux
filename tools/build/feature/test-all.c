@@ -14,6 +14,10 @@
 # include "test-libpython.c"
 #undef main
 
+#define main main_test_libpython_version
+# include "test-libpython-version.c"
+#undef main
+
 #define main main_test_libperl
 # include "test-libperl.c"
 #undef main
@@ -102,6 +106,10 @@
 # include "test-libdw-dwarf-unwind.c"
 #undef main
 
+#define main main_test_sync_compare_and_swap
+# include "test-sync-compare-and-swap.c"
+#undef main
+
 #define main main_test_zlib
 # include "test-zlib.c"
 #undef main
@@ -166,10 +174,6 @@
 # include "test-disassembler-four-args.c"
 #undef main
 
-#define main main_test_disassembler_init_styled
-# include "test-disassembler-init-styled.c"
-#undef main
-
 #define main main_test_libzstd
 # include "test-libzstd.c"
 #undef main
@@ -177,6 +181,7 @@
 int main(int argc, char *argv[])
 {
 	main_test_libpython();
+	main_test_libpython_version();
 	main_test_libperl();
 	main_test_hello();
 	main_test_libelf();
@@ -199,6 +204,7 @@ int main(int argc, char *argv[])
 	main_test_timerfd();
 	main_test_stackprotector_all();
 	main_test_libdw_dwarf_unwind();
+	main_test_sync_compare_and_swap(argc, argv);
 	main_test_zlib();
 	main_test_pthread_attr_setaffinity_np();
 	main_test_pthread_barrier();

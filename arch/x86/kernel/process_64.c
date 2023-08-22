@@ -41,8 +41,7 @@
 #include <linux/syscalls.h>
 
 #include <asm/processor.h>
-#include <asm/pkru.h>
-#include <asm/fpu/sched.h>
+#include <asm/fpu/internal.h>
 #include <asm/mmu_context.h>
 #include <asm/prctl.h>
 #include <asm/desc.h>
@@ -137,7 +136,7 @@ void __show_regs(struct pt_regs *regs, enum show_regs_mode mode,
 		       log_lvl, d3, d6, d7);
 	}
 
-	if (cpu_feature_enabled(X86_FEATURE_OSPKE))
+	if (boot_cpu_has(X86_FEATURE_OSPKE))
 		printk("%sPKRU: %08x\n", log_lvl, read_pkru());
 }
 
@@ -165,7 +164,7 @@ static noinstr unsigned long __rdgsbase_inactive(void)
 
 	lockdep_assert_irqs_disabled();
 
-	if (!cpu_feature_enabled(X86_FEATURE_XENPV)) {
+	if (!static_cpu_has(X86_FEATURE_XENPV)) {
 		native_swapgs();
 		gsbase = rdgsbase();
 		native_swapgs();
@@ -190,7 +189,7 @@ static noinstr void __wrgsbase_inactive(unsigned long gsbase)
 {
 	lockdep_assert_irqs_disabled();
 
-	if (!cpu_feature_enabled(X86_FEATURE_XENPV)) {
+	if (!static_cpu_has(X86_FEATURE_XENPV)) {
 		native_swapgs();
 		wrgsbase(gsbase);
 		native_swapgs();
@@ -338,29 +337,6 @@ static __always_inline void load_seg_legacy(unsigned short prev_index,
 		 */
 		loadseg(which, next_index);
 	}
-}
-
-/*
- * Store prev's PKRU value and load next's PKRU value if they differ. PKRU
- * is not XSTATE managed on context switch because that would require a
- * lookup in the task's FPU xsave buffer and require to keep that updated
- * in various places.
- */
-static __always_inline void x86_pkru_load(struct thread_struct *prev,
-					  struct thread_struct *next)
-{
-	if (!cpu_feature_enabled(X86_FEATURE_OSPKE))
-		return;
-
-	/* Stash the prev task's value: */
-	prev->pkru = rdpkru();
-
-	/*
-	 * PKRU writes are slightly expensive.  Avoid them when not
-	 * strictly necessary:
-	 */
-	if (prev->pkru != next->pkru)
-		wrpkru(next->pkru);
 }
 
 static __always_inline void x86_fsgsbase_load(struct thread_struct *prev,
@@ -535,10 +511,11 @@ start_thread(struct pt_regs *regs, unsigned long new_ip, unsigned long new_sp)
 EXPORT_SYMBOL_GPL(start_thread);
 
 #ifdef CONFIG_COMPAT
-void compat_start_thread(struct pt_regs *regs, u32 new_ip, u32 new_sp, bool x32)
+void compat_start_thread(struct pt_regs *regs, u32 new_ip, u32 new_sp)
 {
 	start_thread_common(regs, new_ip, new_sp,
-			    x32 ? __USER_CS : __USER32_CS,
+			    test_thread_flag(TIF_X32)
+			    ? __USER_CS : __USER32_CS,
 			    __USER_DS, __USER_DS);
 }
 #endif
@@ -553,17 +530,17 @@ void compat_start_thread(struct pt_regs *regs, u32 new_ip, u32 new_sp, bool x32)
  * Kprobes not supported here. Set the probe on schedule instead.
  * Function graph tracer not supported too.
  */
-__no_kmsan_checks
 __visible __notrace_funcgraph struct task_struct *
 __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 {
 	struct thread_struct *prev = &prev_p->thread;
 	struct thread_struct *next = &next_p->thread;
 	struct fpu *prev_fpu = &prev->fpu;
+	struct fpu *next_fpu = &next->fpu;
 	int cpu = smp_processor_id();
 
 	WARN_ON_ONCE(IS_ENABLED(CONFIG_DEBUG_ENTRY) &&
-		     this_cpu_read(pcpu_hot.hardirq_stack_inuse));
+		     this_cpu_read(irq_count) != -1);
 
 	if (!test_thread_flag(TIF_NEED_FPU_LOAD))
 		switch_fpu_prepare(prev_fpu, cpu);
@@ -612,15 +589,13 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 
 	x86_fsgsbase_load(prev, next);
 
-	x86_pkru_load(prev, next);
-
 	/*
 	 * Switch the PDA and FPU contexts.
 	 */
-	raw_cpu_write(pcpu_hot.current_task, next_p);
-	raw_cpu_write(pcpu_hot.top_of_stack, task_top_of_stack(next_p));
+	this_cpu_write(current_task, next_p);
+	this_cpu_write(cpu_current_top_of_stack, task_top_of_stack(next_p));
 
-	switch_fpu_finish();
+	switch_fpu_finish(next_fpu);
 
 	/* Reload sp0. */
 	update_task_stack(next_p);
@@ -656,7 +631,7 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 	}
 
 	/* Load the Intel cache allocation PQR MSR. */
-	resctrl_sched_in(next_p);
+	resctrl_sched_in();
 
 	return prev_p;
 }
@@ -666,12 +641,16 @@ void set_personality_64bit(void)
 	/* inherit personality from parent */
 
 	/* Make sure to be in 64bit mode */
+	clear_thread_flag(TIF_IA32);
 	clear_thread_flag(TIF_ADDR32);
+	clear_thread_flag(TIF_X32);
 	/* Pretend that this comes from a 64bit execve */
 	task_pt_regs(current)->orig_ax = __NR_execve;
 	current_thread_info()->status &= ~TS_COMPAT;
+
+	/* Ensure the corresponding mm is not marked. */
 	if (current->mm)
-		current->mm->context.flags = MM_CONTEXT_HAS_VSYSCALL;
+		current->mm->context.ia32_compat = 0;
 
 	/* TBD: overwrites user setup. Should have two bits.
 	   But 64bit processes have always behaved this way,
@@ -682,10 +661,11 @@ void set_personality_64bit(void)
 
 static void __set_personality_x32(void)
 {
-#ifdef CONFIG_X86_X32_ABI
+#ifdef CONFIG_X86_X32
+	clear_thread_flag(TIF_IA32);
+	set_thread_flag(TIF_X32);
 	if (current->mm)
-		current->mm->context.flags = 0;
-
+		current->mm->context.ia32_compat = TIF_X32;
 	current->personality &= ~READ_IMPLIES_EXEC;
 	/*
 	 * in_32bit_syscall() uses the presence of the x32 syscall bit
@@ -703,14 +683,10 @@ static void __set_personality_x32(void)
 static void __set_personality_ia32(void)
 {
 #ifdef CONFIG_IA32_EMULATION
-	if (current->mm) {
-		/*
-		 * uprobes applied to this MM need to know this and
-		 * cannot use user_64bit_mode() at that time.
-		 */
-		current->mm->context.flags = MM_CONTEXT_UPROBE_IA32;
-	}
-
+	set_thread_flag(TIF_IA32);
+	clear_thread_flag(TIF_X32);
+	if (current->mm)
+		current->mm->context.ia32_compat = TIF_IA32;
 	current->personality |= force_personality32;
 	/* Prepare the first "return" to user space */
 	task_pt_regs(current)->orig_ax = __NR_ia32_execve;
@@ -845,7 +821,7 @@ SYSCALL_DEFINE2(arch_prctl, int, option, unsigned long, arg2)
 
 	ret = do_arch_prctl_64(current, option, arg2);
 	if (ret == -EINVAL)
-		ret = do_arch_prctl_common(option, arg2);
+		ret = do_arch_prctl_common(current, option, arg2);
 
 	return ret;
 }
@@ -853,7 +829,7 @@ SYSCALL_DEFINE2(arch_prctl, int, option, unsigned long, arg2)
 #ifdef CONFIG_IA32_EMULATION
 COMPAT_SYSCALL_DEFINE2(arch_prctl, int, option, unsigned long, arg2)
 {
-	return do_arch_prctl_common(option, arg2);
+	return do_arch_prctl_common(current, option, arg2);
 }
 #endif
 

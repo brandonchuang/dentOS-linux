@@ -15,6 +15,7 @@
 #ifdef CONFIG_PPC_PMAC
 #include <asm/machdep.h>
 #include <asm/pmac_feature.h>
+#include <asm/prom.h>
 #endif
 
 #include "usb.h"
@@ -157,9 +158,9 @@ static void ehci_wait_for_companions(struct pci_dev *pdev, struct usb_hcd *hcd,
 /**
  * usb_hcd_pci_probe - initialize PCI-based HCDs
  * @dev: USB Host Controller being probed
+ * @id: pci hotplug id connecting controller to HCD framework
  * @driver: USB HC driver handle
- *
- * Context: task context, might sleep
+ * Context: !in_interrupt()
  *
  * Allocates basic PCI resources for this USB host controller, and
  * then invokes the start() method for the HCD associated with it
@@ -169,7 +170,8 @@ static void ehci_wait_for_companions(struct pci_dev *pdev, struct usb_hcd *hcd,
  *
  * Return: 0 if successful.
  */
-int usb_hcd_pci_probe(struct pci_dev *dev, const struct hc_driver *driver)
+int usb_hcd_pci_probe(struct pci_dev *dev, const struct pci_device_id *id,
+		      const struct hc_driver *driver)
 {
 	struct usb_hcd		*hcd;
 	int			retval;
@@ -177,6 +179,9 @@ int usb_hcd_pci_probe(struct pci_dev *dev, const struct hc_driver *driver)
 
 	if (usb_disabled())
 		return -ENODEV;
+
+	if (!id)
+		return -EINVAL;
 
 	if (!driver)
 		return -EINVAL;
@@ -242,7 +247,7 @@ int usb_hcd_pci_probe(struct pci_dev *dev, const struct hc_driver *driver)
 					hcd->rsrc_len, driver->description))
 				break;
 		}
-		if (region == PCI_STD_NUM_BARS) {
+		if (region == PCI_ROM_RESOURCE) {
 			dev_dbg(&dev->dev, "no i/o regions available\n");
 			retval = -EBUSY;
 			goto put_hcd;
@@ -299,8 +304,7 @@ EXPORT_SYMBOL_GPL(usb_hcd_pci_probe);
 /**
  * usb_hcd_pci_remove - shutdown processing for PCI-based HCDs
  * @dev: USB Host Controller being removed
- *
- * Context: task context, might sleep
+ * Context: !in_interrupt()
  *
  * Reverses the effect of usb_hcd_pci_probe(), first invoking
  * the HCD's stop() method.  It is always called from a thread
@@ -440,7 +444,7 @@ static int suspend_common(struct device *dev, bool do_wakeup)
 				HCD_WAKEUP_PENDING(hcd->shared_hcd))
 			return -EBUSY;
 		retval = hcd->driver->pci_suspend(hcd, do_wakeup);
-		suspend_report_result(dev, hcd->driver->pci_suspend, retval);
+		suspend_report_result(hcd->driver->pci_suspend, retval);
 
 		/* Check again in case wakeup raced with pci_suspend */
 		if ((retval == 0 && do_wakeup && HCD_WAKEUP_PENDING(hcd)) ||
@@ -550,23 +554,12 @@ static int hcd_pci_suspend_noirq(struct device *dev)
 		dev_dbg(dev, "--> PCI %s\n",
 				pci_power_name(pci_dev->current_state));
 	} else {
-		suspend_report_result(dev, pci_prepare_to_sleep, retval);
+		suspend_report_result(pci_prepare_to_sleep, retval);
 		return retval;
 	}
 
 	powermac_set_asic(pci_dev, 0);
 	return retval;
-}
-
-static int hcd_pci_poweroff_late(struct device *dev)
-{
-	struct pci_dev		*pci_dev = to_pci_dev(dev);
-	struct usb_hcd		*hcd = pci_get_drvdata(pci_dev);
-
-	if (hcd->driver->pci_poweroff_late && !HCD_DEAD(hcd))
-		return hcd->driver->pci_poweroff_late(hcd, device_may_wakeup(dev));
-
-	return 0;
 }
 
 static int hcd_pci_resume_noirq(struct device *dev)
@@ -589,7 +582,6 @@ static int hcd_pci_restore(struct device *dev)
 
 #define hcd_pci_suspend		NULL
 #define hcd_pci_suspend_noirq	NULL
-#define hcd_pci_poweroff_late	NULL
 #define hcd_pci_resume_noirq	NULL
 #define hcd_pci_resume		NULL
 #define hcd_pci_restore		NULL
@@ -622,12 +614,11 @@ const struct dev_pm_ops usb_hcd_pci_pm_ops = {
 	.suspend_noirq	= hcd_pci_suspend_noirq,
 	.resume_noirq	= hcd_pci_resume_noirq,
 	.resume		= hcd_pci_resume,
-	.freeze		= hcd_pci_suspend,
+	.freeze		= check_root_hub_suspended,
 	.freeze_noirq	= check_root_hub_suspended,
 	.thaw_noirq	= NULL,
-	.thaw		= hcd_pci_resume,
+	.thaw		= NULL,
 	.poweroff	= hcd_pci_suspend,
-	.poweroff_late	= hcd_pci_poweroff_late,
 	.poweroff_noirq	= hcd_pci_suspend_noirq,
 	.restore_noirq	= hcd_pci_resume_noirq,
 	.restore	= hcd_pci_restore,

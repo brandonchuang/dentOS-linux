@@ -16,7 +16,6 @@
 #include <linux/gfp.h>
 #include <linux/jhash.h>
 #include <net/tcp.h>
-#include <trace/events/tcp.h>
 
 static DEFINE_SPINLOCK(tcp_cong_list_lock);
 static LIST_HEAD(tcp_cong_list);
@@ -32,17 +31,6 @@ struct tcp_congestion_ops *tcp_ca_find(const char *name)
 	}
 
 	return NULL;
-}
-
-void tcp_set_ca_state(struct sock *sk, const u8 ca_state)
-{
-	struct inet_connection_sock *icsk = inet_csk(sk);
-
-	trace_tcp_cong_state_set(sk, ca_state);
-
-	if (icsk->icsk_ca_ops->set_state)
-		icsk->icsk_ca_ops->set_state(sk, ca_state);
-	icsk->icsk_ca_state = ca_state;
 }
 
 /* Must be called with rcu lock held */
@@ -147,6 +135,7 @@ u32 tcp_ca_get_key_by_name(struct net *net, const char *name, bool *ecn_ca)
 
 	return key;
 }
+EXPORT_SYMBOL_GPL(tcp_ca_get_key_by_name);
 
 char *tcp_ca_get_name_by_key(u32 key, char *buffer)
 {
@@ -162,6 +151,7 @@ char *tcp_ca_get_name_by_key(u32 key, char *buffer)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(tcp_ca_get_name_by_key);
 
 /* Assign choice of congestion control. */
 void tcp_assign_congestion_control(struct sock *sk)
@@ -240,10 +230,6 @@ int tcp_set_default_congestion_control(struct net *net, const char *name)
 		ret = -ENOENT;
 	} else if (!bpf_try_module_get(ca, ca->owner)) {
 		ret = -EBUSY;
-	} else if (!net_eq(net, &init_net) &&
-			!(ca->flags & TCP_CONG_NON_RESTRICTED)) {
-		/* Only init netns can set default to a restricted algorithm */
-		ret = -EPERM;
 	} else {
 		prev = xchg(&net->ipv4.tcp_congestion_control, ca);
 		if (prev)
@@ -403,12 +389,12 @@ int tcp_set_congestion_control(struct sock *sk, const char *name, bool load,
  * ABC caps N to 2. Slow start exits when cwnd grows over ssthresh and
  * returns the leftover acks to adjust cwnd in congestion avoidance mode.
  */
-__bpf_kfunc u32 tcp_slow_start(struct tcp_sock *tp, u32 acked)
+u32 tcp_slow_start(struct tcp_sock *tp, u32 acked)
 {
-	u32 cwnd = min(tcp_snd_cwnd(tp) + acked, tp->snd_ssthresh);
+	u32 cwnd = min(tp->snd_cwnd + acked, tp->snd_ssthresh);
 
-	acked -= cwnd - tcp_snd_cwnd(tp);
-	tcp_snd_cwnd_set(tp, min(cwnd, tp->snd_cwnd_clamp));
+	acked -= cwnd - tp->snd_cwnd;
+	tp->snd_cwnd = min(cwnd, tp->snd_cwnd_clamp);
 
 	return acked;
 }
@@ -417,12 +403,12 @@ EXPORT_SYMBOL_GPL(tcp_slow_start);
 /* In theory this is tp->snd_cwnd += 1 / tp->snd_cwnd (or alternative w),
  * for every packet that was ACKed.
  */
-__bpf_kfunc void tcp_cong_avoid_ai(struct tcp_sock *tp, u32 w, u32 acked)
+void tcp_cong_avoid_ai(struct tcp_sock *tp, u32 w, u32 acked)
 {
 	/* If credits accumulated at a higher w, apply them gently now. */
 	if (tp->snd_cwnd_cnt >= w) {
 		tp->snd_cwnd_cnt = 0;
-		tcp_snd_cwnd_set(tp, tcp_snd_cwnd(tp) + 1);
+		tp->snd_cwnd++;
 	}
 
 	tp->snd_cwnd_cnt += acked;
@@ -430,9 +416,9 @@ __bpf_kfunc void tcp_cong_avoid_ai(struct tcp_sock *tp, u32 w, u32 acked)
 		u32 delta = tp->snd_cwnd_cnt / w;
 
 		tp->snd_cwnd_cnt -= delta * w;
-		tcp_snd_cwnd_set(tp, tcp_snd_cwnd(tp) + delta);
+		tp->snd_cwnd += delta;
 	}
-	tcp_snd_cwnd_set(tp, min(tcp_snd_cwnd(tp), tp->snd_cwnd_clamp));
+	tp->snd_cwnd = min(tp->snd_cwnd, tp->snd_cwnd_clamp);
 }
 EXPORT_SYMBOL_GPL(tcp_cong_avoid_ai);
 
@@ -443,7 +429,7 @@ EXPORT_SYMBOL_GPL(tcp_cong_avoid_ai);
 /* This is Jacobson's slow start and congestion avoidance.
  * SIGCOMM '88, p. 328.
  */
-__bpf_kfunc void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 acked)
+void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
@@ -457,24 +443,24 @@ __bpf_kfunc void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 			return;
 	}
 	/* In dangerous area, increase slowly. */
-	tcp_cong_avoid_ai(tp, tcp_snd_cwnd(tp), acked);
+	tcp_cong_avoid_ai(tp, tp->snd_cwnd, acked);
 }
 EXPORT_SYMBOL_GPL(tcp_reno_cong_avoid);
 
 /* Slow start threshold is half the congestion window (min 2) */
-__bpf_kfunc u32 tcp_reno_ssthresh(struct sock *sk)
+u32 tcp_reno_ssthresh(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 
-	return max(tcp_snd_cwnd(tp) >> 1U, 2U);
+	return max(tp->snd_cwnd >> 1U, 2U);
 }
 EXPORT_SYMBOL_GPL(tcp_reno_ssthresh);
 
-__bpf_kfunc u32 tcp_reno_undo_cwnd(struct sock *sk)
+u32 tcp_reno_undo_cwnd(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 
-	return max(tcp_snd_cwnd(tp), tp->prior_cwnd);
+	return max(tp->snd_cwnd, tp->prior_cwnd);
 }
 EXPORT_SYMBOL_GPL(tcp_reno_undo_cwnd);
 

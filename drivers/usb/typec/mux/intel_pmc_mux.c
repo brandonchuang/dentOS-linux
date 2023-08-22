@@ -83,6 +83,8 @@ enum {
 /*
  * Input Output Manager (IOM) PORT STATUS
  */
+#define IOM_PORT_STATUS_OFFSET				0x560
+
 #define IOM_PORT_STATUS_ACTIVITY_TYPE_MASK		GENMASK(9, 6)
 #define IOM_PORT_STATUS_ACTIVITY_TYPE_SHIFT		6
 #define IOM_PORT_STATUS_ACTIVITY_TYPE_USB		0x03
@@ -121,8 +123,8 @@ struct pmc_usb_port {
 	int num;
 	u32 iom_status;
 	struct pmc_usb *pmc;
-	struct typec_mux_dev *typec_mux;
-	struct typec_switch_dev *typec_sw;
+	struct typec_mux *typec_mux;
+	struct typec_switch *typec_sw;
 	struct usb_role_switch *usb_sw;
 
 	enum typec_orientation orientation;
@@ -142,7 +144,6 @@ struct pmc_usb {
 	struct pmc_usb_port *port;
 	struct acpi_device *iom_adev;
 	void __iomem *iom_base;
-	u32 iom_port_status_offset;
 };
 
 static void update_port_status(struct pmc_usb_port *port)
@@ -152,8 +153,7 @@ static void update_port_status(struct pmc_usb_port *port)
 	/* SoC expects the USB Type-C port numbers to start with 0 */
 	port_num = port->usb3_port - 1;
 
-	port->iom_status = readl(port->pmc->iom_base +
-				 port->pmc->iom_port_status_offset +
+	port->iom_status = readl(port->pmc->iom_base + IOM_PORT_STATUS_OFFSET +
 				 port_num * sizeof(u32));
 }
 
@@ -173,10 +173,9 @@ static int hsl_orientation(struct pmc_usb_port *port)
 	return port->orientation - 1;
 }
 
-static int pmc_usb_send_command(struct intel_scu_ipc_dev *ipc, u8 *msg, u32 len)
+static int pmc_usb_command(struct pmc_usb_port *port, u8 *msg, u32 len)
 {
 	u8 response[4];
-	u8 status_res;
 	int ret;
 
 	/*
@@ -184,40 +183,19 @@ static int pmc_usb_send_command(struct intel_scu_ipc_dev *ipc, u8 *msg, u32 len)
 	 * Status can be checked from the response message if the
 	 * function intel_scu_ipc_dev_command succeeds.
 	 */
-	ret = intel_scu_ipc_dev_command(ipc, PMC_USBC_CMD, 0, msg,
+	ret = intel_scu_ipc_dev_command(port->pmc->ipc, PMC_USBC_CMD, 0, msg,
 					len, response, sizeof(response));
 
 	if (ret)
 		return ret;
 
-	status_res = (msg[0] & 0xf) < PMC_USB_SAFE_MODE ?
-		     response[2] : response[1];
-
-	if (status_res & PMC_USB_RESP_STATUS_FAILURE) {
-		if (status_res & PMC_USB_RESP_STATUS_FATAL)
+	if (response[2] & PMC_USB_RESP_STATUS_FAILURE) {
+		if (response[2] & PMC_USB_RESP_STATUS_FATAL)
 			return -EIO;
-
 		return -EBUSY;
 	}
 
 	return 0;
-}
-
-static int pmc_usb_command(struct pmc_usb_port *port, u8 *msg, u32 len)
-{
-	int retry_count = 3;
-	int ret;
-
-	/*
-	 * If PMC is busy then retry the command once again
-	 */
-	while (retry_count--) {
-		ret = pmc_usb_send_command(port->pmc->ipc, msg, len);
-		if (ret != -EBUSY)
-			break;
-	}
-
-	return ret;
 }
 
 static int
@@ -289,7 +267,6 @@ static int
 pmc_usb_mux_tbt(struct pmc_usb_port *port, struct typec_mux_state *state)
 {
 	struct typec_thunderbolt_data *data = state->data;
-	u8 cable_rounded = TBT_CABLE_ROUNDED_SUPPORT(data->cable_mode);
 	u8 cable_speed = TBT_CABLE_SPEED(data->cable_mode);
 	struct altmode_req req = { };
 
@@ -317,8 +294,6 @@ pmc_usb_mux_tbt(struct pmc_usb_port *port, struct typec_mux_state *state)
 		req.mode_data |= PMC_USB_ALTMODE_ACTIVE_CABLE;
 
 	req.mode_data |= PMC_USB_ALTMODE_CABLE_SPD(cable_speed);
-
-	req.mode_data |= PMC_USB_ALTMODE_TBT_GEN(cable_rounded);
 
 	return pmc_usb_command(port, (void *)&req, sizeof(req));
 }
@@ -355,11 +330,6 @@ pmc_usb_mux_usb4(struct pmc_usb_port *port, struct typec_mux_state *state)
 		fallthrough;
 	default:
 		req.mode_data |= PMC_USB_ALTMODE_ACTIVE_CABLE;
-
-		/* Configure data rate to rounded in the case of Active TBT3
-		 * and USB4 cables.
-		 */
-		req.mode_data |= PMC_USB_ALTMODE_TBT_GEN(1);
 		break;
 	}
 
@@ -369,22 +339,11 @@ pmc_usb_mux_usb4(struct pmc_usb_port *port, struct typec_mux_state *state)
 	return pmc_usb_command(port, (void *)&req, sizeof(req));
 }
 
-static int pmc_usb_mux_safe_state(struct pmc_usb_port *port,
-				  struct typec_mux_state *state)
+static int pmc_usb_mux_safe_state(struct pmc_usb_port *port)
 {
 	u8 msg;
 
 	if (IOM_PORT_ACTIVITY_IS(port->iom_status, SAFE_MODE))
-		return 0;
-
-	if ((IOM_PORT_ACTIVITY_IS(port->iom_status, DP) ||
-	     IOM_PORT_ACTIVITY_IS(port->iom_status, DP_MFD)) &&
-	     state->alt && state->alt->svid == USB_TYPEC_DP_SID)
-		return 0;
-
-	if ((IOM_PORT_ACTIVITY_IS(port->iom_status, TBT) ||
-	     IOM_PORT_ACTIVITY_IS(port->iom_status, ALT_MODE_TBT_USB)) &&
-	     state->alt && state->alt->svid == USB_TYPEC_TBT_SID)
 		return 0;
 
 	msg = PMC_USB_SAFE_MODE;
@@ -444,7 +403,7 @@ static int pmc_usb_connect(struct pmc_usb_port *port, enum usb_role role)
 }
 
 static int
-pmc_usb_mux_set(struct typec_mux_dev *mux, struct typec_mux_state *state)
+pmc_usb_mux_set(struct typec_mux *mux, struct typec_mux_state *state)
 {
 	struct pmc_usb_port *port = typec_mux_get_drvdata(mux);
 
@@ -454,7 +413,7 @@ pmc_usb_mux_set(struct typec_mux_dev *mux, struct typec_mux_state *state)
 		return 0;
 
 	if (state->mode == TYPEC_STATE_SAFE)
-		return pmc_usb_mux_safe_state(port, state);
+		return pmc_usb_mux_safe_state(port);
 	if (state->mode == TYPEC_STATE_USB)
 		return pmc_usb_connect(port, port->role);
 
@@ -480,7 +439,7 @@ pmc_usb_mux_set(struct typec_mux_dev *mux, struct typec_mux_state *state)
 	return -EOPNOTSUPP;
 }
 
-static int pmc_usb_set_orientation(struct typec_switch_dev *sw,
+static int pmc_usb_set_orientation(struct typec_switch *sw,
 				   enum typec_orientation orientation)
 {
 	struct pmc_usb_port *port = typec_switch_get_drvdata(sw);
@@ -580,43 +539,28 @@ err_unregister_switch:
 	return ret;
 }
 
-/* IOM ACPI IDs and IOM_PORT_STATUS_OFFSET */
-static const struct acpi_device_id iom_acpi_ids[] = {
-	/* TigerLake */
-	{ "INTC1072", 0x560, },
+static int is_memory(struct acpi_resource *res, void *data)
+{
+	struct resource r;
 
-	/* AlderLake */
-	{ "INTC1079", 0x160, },
-
-	/* Meteor Lake */
-	{ "INTC107A", 0x160, },
-	{}
-};
+	return !acpi_dev_resource_memory(res, &r);
+}
 
 static int pmc_usb_probe_iom(struct pmc_usb *pmc)
 {
 	struct list_head resource_list;
 	struct resource_entry *rentry;
-	static const struct acpi_device_id *dev_id;
-	struct acpi_device *adev = NULL;
+	struct acpi_device *adev;
 	int ret;
 
-	for (dev_id = &iom_acpi_ids[0]; dev_id->id[0]; dev_id++) {
-		adev = acpi_dev_get_first_match_dev(dev_id->id, NULL, -1);
-		if (adev)
-			break;
-	}
+	adev = acpi_dev_get_first_match_dev("INTC1072", NULL, -1);
 	if (!adev)
 		return -ENODEV;
 
-	pmc->iom_port_status_offset = (u32)dev_id->driver_data;
-
 	INIT_LIST_HEAD(&resource_list);
-	ret = acpi_dev_get_memory_resources(adev, &resource_list);
-	if (ret < 0) {
-		acpi_dev_put(adev);
+	ret = acpi_dev_get_resources(adev, &resource_list, is_memory, NULL);
+	if (ret < 0)
 		return ret;
-	}
 
 	rentry = list_first_entry_or_null(&resource_list, struct resource_entry, node);
 	if (rentry)
@@ -625,13 +569,8 @@ static int pmc_usb_probe_iom(struct pmc_usb *pmc)
 	acpi_dev_free_resource_list(&resource_list);
 
 	if (!pmc->iom_base) {
-		acpi_dev_put(adev);
+		put_device(&adev->dev);
 		return -ENOMEM;
-	}
-
-	if (IS_ERR(pmc->iom_base)) {
-		acpi_dev_put(adev);
-		return PTR_ERR(pmc->iom_base);
 	}
 
 	pmc->iom_adev = adev;
@@ -684,10 +623,8 @@ static int pmc_usb_probe(struct platform_device *pdev)
 			break;
 
 		ret = pmc_usb_register_port(pmc, i, fwnode);
-		if (ret) {
-			fwnode_handle_put(fwnode);
+		if (ret)
 			goto err_remove_ports;
-		}
 	}
 
 	platform_set_drvdata(pdev, pmc);
@@ -701,7 +638,7 @@ err_remove_ports:
 		usb_role_switch_unregister(pmc->port[i].usb_sw);
 	}
 
-	acpi_dev_put(pmc->iom_adev);
+	put_device(&pmc->iom_adev->dev);
 
 	return ret;
 }
@@ -717,7 +654,7 @@ static int pmc_usb_remove(struct platform_device *pdev)
 		usb_role_switch_unregister(pmc->port[i].usb_sw);
 	}
 
-	acpi_dev_put(pmc->iom_adev);
+	put_device(&pmc->iom_adev->dev);
 
 	return 0;
 }

@@ -77,7 +77,6 @@
 #define ACP_POWER_OFF_IN_PROGRESS	0x03
 
 #define ACP3x_ITER_IRER_SAMP_LEN_MASK	0x38
-#define ACP_EXT_INTR_STAT_CLEAR_MASK 0xFFFFFFFF
 
 struct acp3x_platform_info {
 	u16 play_i2s_instance;
@@ -87,7 +86,7 @@ struct acp3x_platform_info {
 
 struct i2s_dev_data {
 	bool tdm_mode;
-	int i2s_irq;
+	unsigned int i2s_irq;
 	u16 i2s_instance;
 	u32 tdm_fmt;
 	u32 substream_type;

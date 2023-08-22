@@ -1,4 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation version 2.
+ *
+ * This program is distributed "as is" WITHOUT ANY WARRANTY of any
+ * kind, whether express or implied; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ */
 
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -233,28 +242,19 @@ static int dm816x_usb_phy_probe(struct platform_device *pdev)
 
 	pm_runtime_enable(phy->dev);
 	generic_phy = devm_phy_create(phy->dev, NULL, &ops);
-	if (IS_ERR(generic_phy)) {
-		error = PTR_ERR(generic_phy);
-		goto clk_unprepare;
-	}
+	if (IS_ERR(generic_phy))
+		return PTR_ERR(generic_phy);
 
 	phy_set_drvdata(generic_phy, phy);
 
 	phy_provider = devm_of_phy_provider_register(phy->dev,
 						     of_phy_simple_xlate);
-	if (IS_ERR(phy_provider)) {
-		error = PTR_ERR(phy_provider);
-		goto clk_unprepare;
-	}
+	if (IS_ERR(phy_provider))
+		return PTR_ERR(phy_provider);
 
 	usb_add_phy_dev(&phy->phy);
 
 	return 0;
-
-clk_unprepare:
-	pm_runtime_disable(phy->dev);
-	clk_unprepare(phy->refclk);
-	return error;
 }
 
 static int dm816x_usb_phy_remove(struct platform_device *pdev)

@@ -14,7 +14,6 @@
 #include "cudbg_entity.h"
 #include "cudbg_lib.h"
 #include "cudbg_zlib.h"
-#include "cxgb4_tc_mqprio.h"
 
 static const u32 t6_tp_pio_array[][IREG_NUM_ELEM] = {
 	{0x7e40, 0x7e44, 0x020, 28}, /* t6_tp_pio_regs_20_to_3b */
@@ -2702,10 +2701,10 @@ int cudbg_collect_vpd_data(struct cudbg_init *pdbg_init,
 	struct adapter *padap = pdbg_init->adap;
 	struct cudbg_buffer temp_buff = { 0 };
 	char vpd_str[CUDBG_VPD_VER_LEN + 1];
+	u32 scfg_vers, vpd_vers, fw_vers;
 	struct cudbg_vpd_data *vpd_data;
 	struct vpd_params vpd = { 0 };
-	u32 vpd_vers, fw_vers;
-	int rc;
+	int rc, ret;
 
 	rc = t4_get_raw_vpd_params(padap, &vpd);
 	if (rc)
@@ -2714,6 +2713,24 @@ int cudbg_collect_vpd_data(struct cudbg_init *pdbg_init,
 	rc = t4_get_fw_version(padap, &fw_vers);
 	if (rc)
 		return rc;
+
+	/* Serial Configuration Version is located beyond the PF's vpd size.
+	 * Temporarily give access to entire EEPROM to get it.
+	 */
+	rc = pci_set_vpd_size(padap->pdev, EEPROMVSIZE);
+	if (rc < 0)
+		return rc;
+
+	ret = cudbg_read_vpd_reg(padap, CUDBG_SCFG_VER_ADDR, CUDBG_SCFG_VER_LEN,
+				 &scfg_vers);
+
+	/* Restore back to original PF's vpd size */
+	rc = pci_set_vpd_size(padap->pdev, CUDBG_VPD_PF_SIZE);
+	if (rc < 0)
+		return rc;
+
+	if (ret)
+		return ret;
 
 	rc = cudbg_read_vpd_reg(padap, CUDBG_VPD_VER_ADDR, CUDBG_VPD_VER_LEN,
 				vpd_str);
@@ -2735,7 +2752,7 @@ int cudbg_collect_vpd_data(struct cudbg_init *pdbg_init,
 	memcpy(vpd_data->bn, vpd.pn, PN_LEN + 1);
 	memcpy(vpd_data->na, vpd.na, MACADDR_LEN + 1);
 	memcpy(vpd_data->mn, vpd.id, ID_LEN + 1);
-	vpd_data->scfg_vers = t4_read_reg(padap, PCIE_STATIC_SPARE2_A);
+	vpd_data->scfg_vers = scfg_vers;
 	vpd_data->vpd_vers = vpd_vers;
 	vpd_data->fw_major = FW_HDR_FW_VER_MAJOR_G(fw_vers);
 	vpd_data->fw_minor = FW_HDR_FW_VER_MINOR_G(fw_vers);
@@ -3459,7 +3476,7 @@ int cudbg_collect_qdesc(struct cudbg_init *pdbg_init,
 			for (i = 0; i < utxq->ntxq; i++)
 				QDESC_GET_TXQ(&utxq->uldtxq[i].q,
 					      cudbg_uld_txq_to_qtype(j),
-					      out_unlock_uld);
+					      out_unlock);
 		}
 	}
 
@@ -3476,7 +3493,7 @@ int cudbg_collect_qdesc(struct cudbg_init *pdbg_init,
 			for (i = 0; i < urxq->nrxq; i++)
 				QDESC_GET_RXQ(&urxq->uldrxq[i].rspq,
 					      cudbg_uld_rxq_to_qtype(j),
-					      out_unlock_uld);
+					      out_unlock);
 		}
 
 		/* ULD FLQ */
@@ -3488,7 +3505,7 @@ int cudbg_collect_qdesc(struct cudbg_init *pdbg_init,
 			for (i = 0; i < urxq->nrxq; i++)
 				QDESC_GET_FLQ(&urxq->uldrxq[i].fl,
 					      cudbg_uld_flq_to_qtype(j),
-					      out_unlock_uld);
+					      out_unlock);
 		}
 
 		/* ULD CIQ */
@@ -3501,34 +3518,29 @@ int cudbg_collect_qdesc(struct cudbg_init *pdbg_init,
 			for (i = 0; i < urxq->nciq; i++)
 				QDESC_GET_RXQ(&urxq->uldrxq[base + i].rspq,
 					      cudbg_uld_ciq_to_qtype(j),
-					      out_unlock_uld);
+					      out_unlock);
 		}
 	}
-	mutex_unlock(&uld_mutex);
 
-	if (!padap->tc_mqprio)
-		goto out;
-
-	mutex_lock(&padap->tc_mqprio->mqprio_mutex);
 	/* ETHOFLD TXQ */
 	if (s->eohw_txq)
 		for (i = 0; i < s->eoqsets; i++)
 			QDESC_GET_TXQ(&s->eohw_txq[i].q,
-				      CUDBG_QTYPE_ETHOFLD_TXQ, out_unlock_mqprio);
+				      CUDBG_QTYPE_ETHOFLD_TXQ, out);
 
 	/* ETHOFLD RXQ and FLQ */
 	if (s->eohw_rxq) {
 		for (i = 0; i < s->eoqsets; i++)
 			QDESC_GET_RXQ(&s->eohw_rxq[i].rspq,
-				      CUDBG_QTYPE_ETHOFLD_RXQ, out_unlock_mqprio);
+				      CUDBG_QTYPE_ETHOFLD_RXQ, out);
 
 		for (i = 0; i < s->eoqsets; i++)
 			QDESC_GET_FLQ(&s->eohw_rxq[i].fl,
-				      CUDBG_QTYPE_ETHOFLD_FLQ, out_unlock_mqprio);
+				      CUDBG_QTYPE_ETHOFLD_FLQ, out);
 	}
 
-out_unlock_mqprio:
-	mutex_unlock(&padap->tc_mqprio->mqprio_mutex);
+out_unlock:
+	mutex_unlock(&uld_mutex);
 
 out:
 	qdesc_info->qdesc_entry_size = sizeof(*qdesc_entry);
@@ -3557,7 +3569,8 @@ out:
 	}
 
 out_free:
-	kvfree(data);
+	if (data)
+		kvfree(data);
 
 #undef QDESC_GET_FLQ
 #undef QDESC_GET_RXQ
@@ -3565,10 +3578,6 @@ out_free:
 #undef QDESC_GET
 
 	return rc;
-
-out_unlock_uld:
-	mutex_unlock(&uld_mutex);
-	goto out;
 }
 
 int cudbg_collect_flash(struct cudbg_init *pdbg_init,

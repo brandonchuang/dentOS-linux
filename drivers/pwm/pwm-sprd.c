@@ -65,8 +65,8 @@ static void sprd_pwm_write(struct sprd_pwm_chip *spc, u32 hwid,
 	writel_relaxed(val, spc->base + offset);
 }
 
-static int sprd_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
-			      struct pwm_state *state)
+static void sprd_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
+			       struct pwm_state *state)
 {
 	struct sprd_pwm_chip *spc =
 		container_of(chip, struct sprd_pwm_chip, chip);
@@ -83,7 +83,7 @@ static int sprd_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
 	if (ret) {
 		dev_err(spc->dev, "failed to enable pwm%u clocks\n",
 			pwm->hwpwm);
-		return ret;
+		return;
 	}
 
 	val = sprd_pwm_read(spc, pwm->hwpwm, SPRD_PWM_ENABLE);
@@ -113,8 +113,6 @@ static int sprd_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
 	/* Disable PWM clocks if the PWM channel is not in enable state. */
 	if (!state->enabled)
 		clk_bulk_disable_unprepare(SPRD_PWM_CHN_CLKS_NUM, chn->clks);
-
-	return 0;
 }
 
 static int sprd_pwm_config(struct sprd_pwm_chip *spc, struct pwm_device *pwm,
@@ -166,9 +164,6 @@ static int sprd_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	struct pwm_state *cstate = &pwm->state;
 	int ret;
 
-	if (state->polarity != PWM_POLARITY_NORMAL)
-		return -EINVAL;
-
 	if (state->enabled) {
 		if (!cstate->enabled) {
 			/*
@@ -185,10 +180,13 @@ static int sprd_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 			}
 		}
 
-		ret = sprd_pwm_config(spc, pwm, state->duty_cycle,
-				      state->period);
-		if (ret)
-			return ret;
+		if (state->period != cstate->period ||
+		    state->duty_cycle != cstate->duty_cycle) {
+			ret = sprd_pwm_config(spc, pwm, state->duty_cycle,
+					      state->period);
+			if (ret)
+				return ret;
+		}
 
 		sprd_pwm_write(spc, pwm->hwpwm, SPRD_PWM_ENABLE, 1);
 	} else if (cstate->enabled) {
@@ -270,6 +268,7 @@ static int sprd_pwm_probe(struct platform_device *pdev)
 
 	spc->chip.dev = &pdev->dev;
 	spc->chip.ops = &sprd_pwm_ops;
+	spc->chip.base = -1;
 	spc->chip.npwm = spc->num_pwms;
 
 	ret = pwmchip_add(&spc->chip);
@@ -283,9 +282,7 @@ static int sprd_pwm_remove(struct platform_device *pdev)
 {
 	struct sprd_pwm_chip *spc = platform_get_drvdata(pdev);
 
-	pwmchip_remove(&spc->chip);
-
-	return 0;
+	return pwmchip_remove(&spc->chip);
 }
 
 static const struct of_device_id sprd_pwm_of_match[] = {

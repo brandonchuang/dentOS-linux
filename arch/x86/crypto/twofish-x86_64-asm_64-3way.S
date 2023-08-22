@@ -88,7 +88,7 @@
 
 /*
  * Combined G1 & G2 function. Reordered with help of rotates to have moves
- * at beginning.
+ * at begining.
  */
 #define g1g2_3(ab, cd, Tx0, Tx1, Tx2, Tx3, Ty0, Ty1, Ty2, Ty3, x, y) \
 	/* G1,1 && G2,1 */ \
@@ -258,7 +258,7 @@ SYM_FUNC_START(__twofish_enc_blk_3way)
 	popq %rbx;
 	popq %r12;
 	popq %r13;
-	RET;
+	ret;
 
 .L__enc_xor3:
 	outunpack_enc3(xor);
@@ -266,7 +266,7 @@ SYM_FUNC_START(__twofish_enc_blk_3way)
 	popq %rbx;
 	popq %r12;
 	popq %r13;
-	RET;
+	ret;
 SYM_FUNC_END(__twofish_enc_blk_3way)
 
 SYM_FUNC_START(twofish_dec_blk_3way)
@@ -301,5 +301,5 @@ SYM_FUNC_START(twofish_dec_blk_3way)
 	popq %rbx;
 	popq %r12;
 	popq %r13;
-	RET;
+	ret;
 SYM_FUNC_END(twofish_dec_blk_3way)

@@ -85,9 +85,11 @@ int meson_card_parse_dai(struct snd_soc_card *card,
 
 	ret = of_parse_phandle_with_args(node, "sound-dai",
 					 "#sound-dai-cells", 0, &args);
-	if (ret)
-		return dev_err_probe(card->dev, ret, "can't parse dai\n");
-
+	if (ret) {
+		if (ret != -EPROBE_DEFER)
+			dev_err(card->dev, "can't parse dai %d\n", ret);
+		return ret;
+	}
 	*dai_of_node = args.np;
 
 	return snd_soc_get_dai_name(&args, dai_name);
@@ -117,9 +119,9 @@ unsigned int meson_card_parse_daifmt(struct device_node *node,
 	struct device_node *framemaster = NULL;
 	unsigned int daifmt;
 
-	daifmt = snd_soc_daifmt_parse_format(node, NULL);
-
-	snd_soc_daifmt_parse_clock_provider_as_phandle(node, NULL, &bitclkmaster, &framemaster);
+	daifmt = snd_soc_of_parse_daifmt(node, "",
+					 &bitclkmaster, &framemaster);
+	daifmt &= ~SND_SOC_DAIFMT_MASTER_MASK;
 
 	/* If no master is provided, default to cpu master */
 	if (!bitclkmaster || bitclkmaster == cpu_node) {
@@ -300,7 +302,6 @@ int meson_card_probe(struct platform_device *pdev)
 
 	priv->card.owner = THIS_MODULE;
 	priv->card.dev = dev;
-	priv->card.driver_name = dev->driver->name;
 	priv->match_data = data;
 
 	ret = snd_soc_of_parse_card_name(&priv->card, "model");

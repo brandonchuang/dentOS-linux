@@ -180,10 +180,7 @@ void __init efi_mokvar_table_init(void)
 		pr_err("EFI MOKvar config table is not valid\n");
 		return;
 	}
-
-	if (md.type == EFI_BOOT_SERVICES_DATA)
-		efi_mem_reserve(efi.mokvar_table, map_size_needed);
-
+	efi_mem_reserve(efi.mokvar_table, map_size_needed);
 	efi_mokvar_table_size = map_size_needed;
 }
 
@@ -359,4 +356,4 @@ static int __init efi_mokvar_sysfs_init(void)
 	}
 	return err;
 }
-fs_initcall(efi_mokvar_sysfs_init);
+device_initcall(efi_mokvar_sysfs_init);

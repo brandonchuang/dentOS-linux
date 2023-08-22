@@ -22,7 +22,6 @@
  * Authors: Ben Skeggs
  */
 #include "outp.h"
-#include "dp.h"
 #include "ior.h"
 
 #include <subdev/bios.h>
@@ -35,7 +34,7 @@ nvkm_outp_route(struct nvkm_disp *disp)
 	struct nvkm_outp *outp;
 	struct nvkm_ior *ior;
 
-	list_for_each_entry(ior, &disp->iors, head) {
+	list_for_each_entry(ior, &disp->ior, head) {
 		if ((outp = ior->arm.outp) && ior->arm.outp != ior->asy.outp) {
 			OUTP_DBG(outp, "release %s", ior->name);
 			if (ior->func->route.set)
@@ -44,7 +43,7 @@ nvkm_outp_route(struct nvkm_disp *disp)
 		}
 	}
 
-	list_for_each_entry(ior, &disp->iors, head) {
+	list_for_each_entry(ior, &disp->ior, head) {
 		if ((outp = ior->asy.outp)) {
 			OUTP_DBG(outp, "acquire %s", ior->name);
 			if (ior->asy.outp != ior->arm.outp) {
@@ -119,8 +118,8 @@ nvkm_outp_acquire_hda(struct nvkm_outp *outp, enum nvkm_ior_type type,
 	struct nvkm_ior *ior;
 
 	/* Failing that, a completely unused OR is the next best thing. */
-	list_for_each_entry(ior, &outp->disp->iors, head) {
-		if (!ior->identity && ior->hda == hda &&
+	list_for_each_entry(ior, &outp->disp->ior, head) {
+		if (!ior->identity && !!ior->func->hda.hpd == hda &&
 		    !ior->asy.outp && ior->type == type && !ior->arm.outp &&
 		    (ior->func->route.set || ior->id == __ffs(outp->info.or)))
 			return nvkm_outp_acquire_ior(outp, user, ior);
@@ -129,8 +128,8 @@ nvkm_outp_acquire_hda(struct nvkm_outp *outp, enum nvkm_ior_type type,
 	/* Last resort is to assign an OR that's already active on HW,
 	 * but will be released during the next modeset.
 	 */
-	list_for_each_entry(ior, &outp->disp->iors, head) {
-		if (!ior->identity && ior->hda == hda &&
+	list_for_each_entry(ior, &outp->disp->ior, head) {
+		if (!ior->identity && !!ior->func->hda.hpd == hda &&
 		    !ior->asy.outp && ior->type == type &&
 		    (ior->func->route.set || ior->id == __ffs(outp->info.or)))
 			return nvkm_outp_acquire_ior(outp, user, ior);
@@ -168,7 +167,7 @@ nvkm_outp_acquire(struct nvkm_outp *outp, u8 user, bool hda)
 	/* First preference is to reuse the OR that is currently armed
 	 * on HW, if any, in order to prevent unnecessary switching.
 	 */
-	list_for_each_entry(ior, &outp->disp->iors, head) {
+	list_for_each_entry(ior, &outp->disp->ior, head) {
 		if (!ior->identity && !ior->asy.outp && ior->arm.outp == outp) {
 			/*XXX: For various complicated reasons, we can't outright switch
 			 *     the boot-time OR on the first modeset without some fairly
@@ -181,7 +180,7 @@ nvkm_outp_acquire(struct nvkm_outp *outp, u8 user, bool hda)
 			 *
 			 *     This warning is to make it obvious if that proves wrong.
 			 */
-			WARN_ON(hda && !ior->hda);
+			WARN_ON(hda && !ior->func->hda.hpd);
 			return nvkm_outp_acquire_ior(outp, user, ior);
 		}
 	}
@@ -258,14 +257,6 @@ nvkm_outp_init_route(struct nvkm_outp *outp)
 	if (!ior->arm.head || ior->arm.proto != proto) {
 		OUTP_DBG(outp, "no heads (%x %d %d)", ior->arm.head,
 			 ior->arm.proto, proto);
-
-		/* The EFI GOP driver on Ampere can leave unused DP links routed,
-		 * which we don't expect.  The DisableLT IED script *should* get
-		 * us back to where we need to be.
-		 */
-		if (ior->func->route.get && !ior->arm.head && outp->info.type == DCB_OUTPUT_DP)
-			nvkm_dp_disable(outp, ior);
-
 		return;
 	}
 
@@ -294,16 +285,12 @@ nvkm_outp_del(struct nvkm_outp **poutp)
 }
 
 int
-nvkm_outp_new_(const struct nvkm_outp_func *func, struct nvkm_disp *disp,
-	       int index, struct dcb_output *dcbE, struct nvkm_outp **poutp)
+nvkm_outp_ctor(const struct nvkm_outp_func *func, struct nvkm_disp *disp,
+	       int index, struct dcb_output *dcbE, struct nvkm_outp *outp)
 {
 	struct nvkm_i2c *i2c = disp->engine.subdev.device->i2c;
-	struct nvkm_outp *outp;
 	enum nvkm_ior_proto proto;
 	enum nvkm_ior_type type;
-
-	if (!(outp = *poutp = kzalloc(sizeof(*outp), GFP_KERNEL)))
-		return -ENOMEM;
 
 	outp->func = func;
 	outp->disp = disp;
@@ -334,5 +321,7 @@ int
 nvkm_outp_new(struct nvkm_disp *disp, int index, struct dcb_output *dcbE,
 	      struct nvkm_outp **poutp)
 {
-	return nvkm_outp_new_(&nvkm_outp, disp, index, dcbE, poutp);
+	if (!(*poutp = kzalloc(sizeof(**poutp), GFP_KERNEL)))
+		return -ENOMEM;
+	return nvkm_outp_ctor(&nvkm_outp, disp, index, dcbE, *poutp);
 }

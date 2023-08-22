@@ -116,9 +116,6 @@ static int efivarfs_callback(efi_char16_t *name16, efi_guid_t vendor,
 	int err = -ENOMEM;
 	bool is_removable = false;
 
-	if (guid_equal(&vendor, &LINUX_EFI_RANDOM_SEED_TABLE_GUID))
-		return 0;
-
 	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 	if (!entry)
 		return err;
@@ -158,8 +155,10 @@ static int efivarfs_callback(efi_char16_t *name16, efi_guid_t vendor,
 		goto fail_inode;
 	}
 
-	__efivar_entry_get(entry, NULL, &size, NULL);
-	__efivar_entry_add(entry, &efivarfs_list);
+	efivar_entry_size(entry, &size);
+	err = efivar_entry_add(entry, &efivarfs_list);
+	if (err)
+		goto fail_inode;
 
 	/* copied by the above to local storage in the dentry. */
 	kfree(name);
@@ -183,7 +182,10 @@ fail:
 
 static int efivarfs_destroy(struct efivar_entry *entry, void *data)
 {
-	efivar_entry_remove(entry);
+	int err = efivar_entry_remove(entry);
+
+	if (err)
+		return err;
 	kfree(entry);
 	return 0;
 }
@@ -193,9 +195,6 @@ static int efivarfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	struct inode *inode = NULL;
 	struct dentry *root;
 	int err;
-
-	if (!efivar_is_available())
-		return -EOPNOTSUPP;
 
 	sb->s_maxbytes          = MAX_LFS_FILESIZE;
 	sb->s_blocksize         = PAGE_SIZE;
@@ -222,7 +221,7 @@ static int efivarfs_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	err = efivar_init(efivarfs_callback, (void *)sb, true, &efivarfs_list);
 	if (err)
-		efivar_entry_iter(efivarfs_destroy, &efivarfs_list, NULL);
+		__efivar_entry_iter(efivarfs_destroy, &efivarfs_list, NULL, NULL);
 
 	return err;
 }
@@ -246,11 +245,8 @@ static void efivarfs_kill_sb(struct super_block *sb)
 {
 	kill_litter_super(sb);
 
-	if (!efivar_is_available())
-		return;
-
 	/* Remove all entries and destroy */
-	efivar_entry_iter(efivarfs_destroy, &efivarfs_list, NULL);
+	__efivar_entry_iter(efivarfs_destroy, &efivarfs_list, NULL, NULL);
 }
 
 static struct file_system_type efivarfs_type = {
@@ -262,6 +258,9 @@ static struct file_system_type efivarfs_type = {
 
 static __init int efivarfs_init(void)
 {
+	if (!efivars_kobject())
+		return -ENODEV;
+
 	return register_filesystem(&efivarfs_type);
 }
 

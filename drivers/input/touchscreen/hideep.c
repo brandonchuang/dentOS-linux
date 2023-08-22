@@ -361,16 +361,13 @@ static int hideep_enter_pgm(struct hideep_ts *ts)
 	return -EIO;
 }
 
-static int hideep_nvm_unlock(struct hideep_ts *ts)
+static void hideep_nvm_unlock(struct hideep_ts *ts)
 {
 	u32 unmask_code;
-	int error;
 
 	hideep_pgm_w_reg(ts, HIDEEP_FLASH_CFG, HIDEEP_NVM_SFR_RPAGE);
-	error = hideep_pgm_r_reg(ts, 0x0000000C, &unmask_code);
+	hideep_pgm_r_reg(ts, 0x0000000C, &unmask_code);
 	hideep_pgm_w_reg(ts, HIDEEP_FLASH_CFG, HIDEEP_NVM_DEFAULT_PAGE);
-	if (error)
-		return error;
 
 	/* make it unprotected code */
 	unmask_code &= ~HIDEEP_PROT_MODE;
@@ -387,8 +384,6 @@ static int hideep_nvm_unlock(struct hideep_ts *ts)
 	NVM_W_SFR(HIDEEP_NVM_MASK_OFS, ts->nvm_mask);
 	SET_FLASH_HWCONTROL();
 	hideep_pgm_w_reg(ts, HIDEEP_FLASH_CFG, HIDEEP_NVM_DEFAULT_PAGE);
-
-	return 0;
 }
 
 static int hideep_check_status(struct hideep_ts *ts)
@@ -467,9 +462,7 @@ static int hideep_program_nvm(struct hideep_ts *ts,
 	u32 addr = 0;
 	int error;
 
-       error = hideep_nvm_unlock(ts);
-       if (error)
-               return error;
+	hideep_nvm_unlock(ts);
 
 	while (ucode_len > 0) {
 		xfer_len = min_t(size_t, ucode_len, HIDEEP_NVM_PAGE_SIZE);
@@ -959,7 +952,7 @@ static const struct attribute_group hideep_ts_attr_group = {
 	.attrs = hideep_ts_sysfs_entries,
 };
 
-static int hideep_suspend(struct device *dev)
+static int __maybe_unused hideep_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct hideep_ts *ts = i2c_get_clientdata(client);
@@ -970,7 +963,7 @@ static int hideep_suspend(struct device *dev)
 	return 0;
 }
 
-static int hideep_resume(struct device *dev)
+static int __maybe_unused hideep_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct hideep_ts *ts = i2c_get_clientdata(client);
@@ -987,7 +980,7 @@ static int hideep_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(hideep_pm_ops, hideep_suspend, hideep_resume);
+static SIMPLE_DEV_PM_OPS(hideep_pm_ops, hideep_suspend, hideep_resume);
 
 static const struct regmap_config hideep_regmap_config = {
 	.reg_bits = 16,
@@ -997,7 +990,8 @@ static const struct regmap_config hideep_regmap_config = {
 	.max_register = 0xffff,
 };
 
-static int hideep_probe(struct i2c_client *client)
+static int hideep_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
 	struct hideep_ts *ts;
 	int error;
@@ -1108,10 +1102,10 @@ static struct i2c_driver hideep_driver = {
 		.name			= HIDEEP_I2C_NAME,
 		.of_match_table		= of_match_ptr(hideep_match_table),
 		.acpi_match_table	= ACPI_PTR(hideep_acpi_id),
-		.pm			= pm_sleep_ptr(&hideep_pm_ops),
+		.pm			= &hideep_pm_ops,
 	},
 	.id_table	= hideep_i2c_id,
-	.probe_new	= hideep_probe,
+	.probe		= hideep_probe,
 };
 
 module_i2c_driver(hideep_driver);

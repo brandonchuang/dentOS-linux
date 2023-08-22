@@ -7,8 +7,7 @@
 #include <asm/cpacf.h>
 #include <asm/timex.h>
 #include <asm/sclp.h>
-#include <asm/kasan.h>
-#include "decompressor.h"
+#include "compressed/decompressor.h"
 #include "boot.h"
 
 #define PRNG_MODE_TDES	 1
@@ -132,7 +131,7 @@ static unsigned long count_valid_kernel_positions(unsigned long kernel_size,
 	unsigned long start, end, pos = 0;
 	int i;
 
-	for_each_mem_detect_usable_block(i, &start, &end) {
+	for_each_mem_detect_block(i, &start, &end) {
 		if (_min >= end)
 			continue;
 		if (start >= _max)
@@ -153,7 +152,7 @@ static unsigned long position_to_address(unsigned long pos, unsigned long kernel
 	unsigned long start, end;
 	int i;
 
-	for_each_mem_detect_usable_block(i, &start, &end) {
+	for_each_mem_detect_block(i, &start, &end) {
 		if (_min >= end)
 			continue;
 		if (start >= _max)
@@ -172,20 +171,42 @@ static unsigned long position_to_address(unsigned long pos, unsigned long kernel
 
 unsigned long get_random_base(unsigned long safe_addr)
 {
-	unsigned long usable_total = get_mem_detect_usable_total();
 	unsigned long memory_limit = get_mem_detect_end();
 	unsigned long base_pos, max_pos, kernel_size;
+	unsigned long kasan_needs;
 	int i;
 
-	/*
-	 * Avoid putting kernel in the end of physical memory
-	 * which vmem and kasan code will use for shadow memory and
-	 * pgtable mapping allocations.
-	 */
-	memory_limit -= kasan_estimate_memory_needs(usable_total);
-	memory_limit -= vmem_estimate_memory_needs(usable_total);
+	if (memory_end_set)
+		memory_limit = min(memory_limit, memory_end);
 
+	if (IS_ENABLED(CONFIG_BLK_DEV_INITRD) && INITRD_START && INITRD_SIZE) {
+		if (safe_addr < INITRD_START + INITRD_SIZE)
+			safe_addr = INITRD_START + INITRD_SIZE;
+	}
 	safe_addr = ALIGN(safe_addr, THREAD_SIZE);
+
+	if ((IS_ENABLED(CONFIG_KASAN))) {
+		/*
+		 * Estimate kasan memory requirements, which it will reserve
+		 * at the very end of available physical memory. To estimate
+		 * that, we take into account that kasan would require
+		 * 1/8 of available physical memory (for shadow memory) +
+		 * creating page tables for the whole memory + shadow memory
+		 * region (1 + 1/8). To keep page tables estimates simple take
+		 * the double of combined ptes size.
+		 */
+		memory_limit = get_mem_detect_end();
+		if (memory_end_set && memory_limit > memory_end)
+			memory_limit = memory_end;
+
+		/* for shadow memory */
+		kasan_needs = memory_limit / 8;
+		/* for paging structures */
+		kasan_needs += (memory_limit + kasan_needs) / PAGE_SIZE /
+			       _PAGE_ENTRIES * _PAGE_TABLE_SIZE * 2;
+		memory_limit -= kasan_needs;
+	}
+
 	kernel_size = vmlinux.image_size + vmlinux.bss_size;
 	if (safe_addr + kernel_size > memory_limit)
 		return 0;
