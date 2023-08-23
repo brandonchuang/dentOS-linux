@@ -29,6 +29,10 @@
 		regulator-boot-on;
 		regulator-always-on;
 	};
+
+	accton_fpga: as8160_fpga {
+
+	};
 };
 
 &can0 {
@@ -52,103 +56,51 @@
 };
 
 &dpmac7 {
-    status = "okay";
-	/*phy-handle = <&aquantia_phy1>;*/
-    fixed-link = <10 1 10000 0 0>;
+	status = "okay";
+	fixed-link = <10 1 10000 0 0>;
 	phy-connection-type = "usxgmii";
-	/*managed = "in-band-status";*/
 };
 &dpmac8 {
-    status = "okay";
-	/*phy-handle = <&aquantia_phy2>;*/
-    fixed-link = <11 1 10000 0 0>;
+	status = "okay";
+	fixed-link = <11 1 10000 0 0>;
 	phy-connection-type = "usxgmii";
-	/*managed = "in-band-status";*/
 };
 &dpmac9 {
-    status = "okay";
-	/*phy-handle = <&aquantia_phy1>;*/
-    fixed-link = <12 1 10000 0 0>;
+	status = "okay";
+	fixed-link = <12 1 10000 0 0>;
 	phy-connection-type = "usxgmii";
-	/*managed = "in-band-status";*/
 };
 &dpmac10 {
-    status = "okay";
-	/*phy-handle = <&aquantia_phy2>;*/
-    fixed-link = <13 1 10000 0 0>;
+	status = "okay";
+	fixed-link = <13 1 10000 0 0>;
 	phy-connection-type = "usxgmii";
-	/*managed = "in-band-status";*/
 };
 &dpmac17 {
-    status = "okay";
-	phy-handle = <&rgmii_phy1>;
+	status = "okay";
+	phy-handle = <&sgmii_phy0>;
 	phy-connection-type = "rgmii-id";
 };
-/*
-&dpmac18 {
-	phy-handle = <&rgmii_phy2>;
-	phy-connection-type = "rgmii-id";
-};
-*/
 
 &emdio1 {
 	status = "okay";
 
+	sgmii_phy0: ethernet-phy@0 {
+		compatible = "ethernet-phy-id0141.0dd1";
+		reg = <0x0>;
+		eee-broken-1000t;
+	};
+
 	rgmii_phy1: ethernet-phy@1 {
-		/* AR8035 PHY */
-		/*compatible = "ethernet-phy-id004d.d072";*/
-        compatible = "ethernet-phy-id0141.0dd1";
+		compatible = "ethernet-phy-id0141.0dd1";
 		reg = <0x1>;
 		eee-broken-1000t;
 	};
-/*
-	rgmii_phy2: ethernet-phy@2 {
-		# AR8035 PHY 
-		compatible = "ethernet-phy-id004d.d072";
-		reg = <0x2>;
-		eee-broken-1000t;
-	};
-
-	aquantia_phy1: ethernet-phy@4 {
-		# AQR107 PHY 
-		compatible = "ethernet-phy-ieee802.3-c45";
-		interrupts = <GIC_SPI 2 IRQ_TYPE_LEVEL_HIGH>;
-		reg = <0x4>;
-	};
-
-	aquantia_phy2: ethernet-phy@5 {
-		# AQR107 PHY 
-		compatible = "ethernet-phy-ieee802.3-c45";
-		interrupts = <GIC_SPI 3 IRQ_TYPE_LEVEL_HIGH>;
-		reg = <0x5>;
-	};
-*/
 };
 
-&emdio2 {
-	status = "okay";
-};
-
-/*
-&esdhc0 {
-	sd-uhs-sdr104;
-	sd-uhs-sdr50;
-	sd-uhs-sdr25;
-	sd-uhs-sdr12;
-	status = "okay";
-};
-*/
 &esdhc0 {
 	status = "okay";
 };
-/*
-&esdhc1 {
-	mmc-hs200-1_8v;
-	mmc-hs400-1_8v;
-	bus-width = <8>;
-	status = "okay";
-};
-*/
+
 &esdhc1 {
 	status = "disable";
 };
@@ -156,100 +108,251 @@
 &fspi {
 	status = "okay";
 
-    flash@0 {
+	flash@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		compatible = "jedec,spi-nor";
 		reg = <0>;
-		spi-max-frequency = <50000000>;
-		#spi-rx-bus-width = <4>;
-                partition@0 {
-                        reg = <0x0 0x1000000>;
-                        label = "uboot";
-                };
+		spi-max-frequency = <5000000>;  /* 5M */
 
-                partition@1 {
-                        reg = <0x1000000 0x100000>;
-                        label = "uboot-env";
-                };
+		partition@0 {
+			reg = <0x0 0x1000000>;
+			label = "uboot";
+		};
 
-                partition@2 {
-                        reg = <0x1100000 0x2800000>;
-                        label = "onie";
-                };
-    };
+		partition@1 {
+			reg = <0x1000000 0x100000>;
+			label = "uboot-env";
+		};
+
+		partition@2 {
+			reg = <0x1100000 0x2800000>;
+			label = "onie";
+		};
+	};
+
+	flash@1 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "jedec,spi-nor";
+		reg = <1>;
+		spi-max-frequency = <5000000>; /* 5M */
+
+		partition@0 {
+			reg = <0x0 0x1000000>;
+			label = "uboot";
+		};
+
+		partition@1 {
+			reg = <0x1000000 0x100000>;
+			label = "uboot-env";
+		};
+
+		partition@2 {
+			reg = <0x1100000 0x2800000>;
+			label = "onie";
+		};
+	};
+    /*
+	mt35xu512aba0: flash@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "jedec,spi-nor";
+		m25p,fast-read;
+		spi-max-frequency = <5000000>;
+		reg = <0>;
+		spi-rx-bus-width = <8>;
+		spi-tx-bus-width = <8>;
+	};
+
+	mt35xu512aba1: flash@1 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "jedec,spi-nor";
+		m25p,fast-read;
+		spi-max-frequency = <5000000>;
+		reg = <1>;
+		spi-rx-bus-width = <8>;
+		spi-tx-bus-width = <8>;
+	};
+    */
 };
 
 &dspi1 {
-    status = "okay";
-    spi-tpm@0 {
-        compatible = "infineon,slb9670";
-        /*mode 0*/
-        reg = <0>;
-        /*spi-max-frequency = <38000000>;*/
-        spi-max-frequency = <4000000>;
-    };
+	status = "okay";
+	spi-tpm@0 {
+		compatible = "infineon,slb9670";
+		/*mode 0*/
+		reg = <0>;
+		/*spi-max-frequency = <38000000>;*/
+		spi-max-frequency = <4000000>; /* 4M */
+	};
 	dflash1: flash@1 {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		compatible = "jedec,spi-nor";
 		reg = <1>;
-		spi-max-frequency = <1000000>;
+		spi-max-frequency = <1000000>; /* 1M */
+
+		partition@0 {
+			reg = <0x0 0x01000000>;
+			label = "fpga";
+		};
+
+		partition@1 {
+			reg = <0x0 0x003f0000>;
+			label = "golden";
+		};
+
+		partition@2 {
+			reg = <0x3f0000 0x00010000>;
+			label = "timer1";
+		};
+
+		partition@3 {
+			reg = <0x400000 0x00400000>;
+			label = "primary";
+		};
+
+		partition@4 {
+			reg = <0x800000 0x00010000>;
+			label = "timer2";
+		};
 	};
 };
 
 &i2c0 {
 	status = "okay";
-    /*
-	i2c-mux@77 {
-		compatible = "nxp,pca9547";
-		reg = <0x77>;
-		#address-cells = <1>;
-		#size-cells = <0>;
+        clock-frequency = <370000>;
 
-		i2c@2 {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <0x2>;
+	i2c_mux@70 {
+		compatible = "nxp,pca9548";
+		reg = <0x70>;
+		i2c-mux-idle-disconnect;
+		#address-cells = <0x1>;
+		#size-cells = <0x0>;
 
-			power-monitor@40 {
-				compatible = "ti,ina220";
-				reg = <0x40>;
-				shunt-resistor = <500>;
+		i2c@0 {
+			#address-cells = <0x1>;
+			#size-cells = <0x0>;
+			reg = <0x0>;
+
+			i2c@48 {
+				compatible = "nxp,lm90";
+				reg = <0x48>;
 			};
 		};
+		i2c@1 {
+			#address-cells = <0x1>;
+			#size-cells = <0x0>;
+			reg = <0x1>;
 
+			i2c@48 {
+				compatible = "nxp,lm90";
+				reg = <0x48>;
+			};
+		};
+		i2c@2 {
+			#address-cells = <0x1>;
+			#size-cells = <0x0>;
+			reg = <0x2>;
+
+		};
 		i2c@3 {
-			#address-cells = <1>;
-			#size-cells = <0>;
+			#address-cells = <0x1>;
+			#size-cells = <0x0>;
 			reg = <0x3>;
 
-			temperature-sensor@4c {
-				compatible = "nxp,sa56004";
-				reg = <0x4c>;
-				vcc-supply = <&sb_3v3>;
+			asc10@60 {
+				compatible = "asc10";
+				reg = <0x60>;
+
+				vmon1 { label = "VDD1P2_MAC";        vmin=<1152>;    vmax=<1248>; };
+				vmon2 { label = "VDD1P8_analog";     vmin=<1746>;    vmax=<1900>; };
+				vmon3 { label = "VDD0P8_analog";     vmin=<776>;     vmax=<840>;  };
+				vmon4 { label = "VDD1P2";            vmin=<1164>;    vmax=<1236>; };
+				vmon5 { label = "VDDK_0P8_near_end"; vmin=<784>;     vmax=<820>;  };
+				vmon6 { label = "VDD1P0";            vmin=<970>;     vmax=<1040>; };
+				vmon7 { label = "VDD3P3_CLK";        vmin=<3135>;    vmax=<3465>; };
+				vmon8 { label = "VDDK_0P8_far_end";  vmin=<784>;     vmax=<816>;  };
+				vmon9 { label = "3P3_CPU_SSD";       vmin=<3135>;    vmax=<3465>; };
+				himon { label = "VCC12_CPU";         vmin=<11640>;   vmax=<12360>; };
+				tmon1 { label = "QDD11,QDD13";       tmin=<(-5000)>; tmax=<75000>; };
+				tmon2 { label = "-QDD8";             tmin=<(-5000)>; tmax=<75000>; };
+				tmon_local { label = "-FPGA_B2B-Right"; tmin=<(-5000)>; tmax=<75000>; };
 			};
 
-			temperature-sensor@4d {
-				compatible = "nxp,sa56004";
-				reg = <0x4d>;
-				vcc-supply = <&sb_3v3>;
+			asc10@61 {
+				compatible = "asc10";
+				reg = <0x61>;
+
+				vmon1 { label = "SYS_3P3";             vmin=<3135>;  vmax=<3465>; };
+				vmon2 { label = "LED_3P3";             vmin=<3135>;  vmax=<3465>; };
+				vmon3 { label = "CPU_SO_3P3";          vmin=<3135>;  vmax=<3465>; };
+				vmon4 { label = "CPU_AUX_3P3";         vmin=<3135>;  vmax=<3465>; };
+				vmon5 { label = "VSTB_3P3";            vmin=<3135>;  vmax=<3465>; };
+				vmon6 { label = "QDD01_16_3P3";        vmin=<3135>;  vmax=<3465>; };
+				vmon7 { label = "QDD17_32_3P3";        vmin=<3135>;  vmax=<3465>; };
+				vmon8 { label = "VDD5V_STBY";          vmin=<4850>;  vmax=<5150>; };
+				vmon9 { label = "VCC5V";               vmin=<4850>;  vmax=<5150>; };
+				himon { label = "VCC12";               vmin=<11640>; vmax=<12360>; };
+				tmon1 { label = "QDD3";                tmin=<(-5000)>; tmax=<75000>; };
+				tmon2 { label = "QDD29,QDD31";         tmin=<(-5000)>; tmax=<75000>; };
+				tmon_local { label = "-FPGA_B2B-Right"; tmin=<(-5000)>; tmax=<75000>; };
+			};
+		};
+		i2c@4 {
+			#address-cells = <0x1>;
+			#size-cells = <0x0>;
+			reg = <0x4>;
+
+			eeprom@57 {
+				compatible = "atmel,24c256";
+				reg = <0x57>;
+			};
+		};
+		i2c@5 {
+			#address-cells = <0x1>;
+			#size-cells = <0x0>;
+			reg = <0x5>;
+
+		};
+		i2c@6 {
+			#address-cells = <0x1>;
+			#size-cells = <0x0>;
+			reg = <0x6>;
+
+		};
+		i2c@7 {
+			#address-cells = <0x1>;
+			#size-cells = <0x0>;
+			reg = <0x7>;
+
+			rtc@68 {
+				compatible = "dallas,ds1339";
+				reg = <0x68>;
+				interrupts-parent = <&extirq>;
+				interrupts = <6 IRQ_TYPE_LEVEL_LOW>;
+				interrupts-extended = <&extirq 6 IRQ_TYPE_LEVEL_LOW>;
 			};
 		};
 	};
-    */
 };
 &i2c1 {
 	status = "okay";
+        clock-frequency = <370000>;
 };
 &i2c2 {
 	status = "okay";
+        clock-frequency = <370000>;
 };
 &i2c3 {
 	status = "okay";
+        clock-frequency = <370000>;
 };
 &i2c4 {
 	status = "okay";
+        clock-frequency = <370000>;
     /*
 	rtc@51 {
 		compatible = "nxp,pcf2129";
@@ -261,12 +364,15 @@
 };
 &i2c5 {
 	status = "okay";
+        clock-frequency = <370000>;
 };
 &i2c6 {
 	status = "okay";
+        clock-frequency = <370000>;
 };
 &i2c7 {
 	status = "okay";
+        clock-frequency = <370000>;
 };
 
 &pcs_mdio3 {
