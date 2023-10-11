@@ -1,17 +1,12 @@
 // SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 /*
- * Device Tree For AC5_db.
+ * Device Tree For Accton as4560-52p.
  *
  * Copyright (C) 2021 Marvell
  *
  */
-// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
-/*
- * Device Tree file for Marvell Alleycat 5 development board
- * This board file supports the B configuration of the board
- */
 
-#include "ac5.dtsi"
+#include "accton-as4560-52p.dtsi"
 
 / {
 	model = "Marvell AC5X RD board";
