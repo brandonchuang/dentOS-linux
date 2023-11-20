@@ -18,7 +18,6 @@
 
 	aliases {
 		mmc0 = &esdhc0;
-		mmc1 = &esdhc1;
 		rtc1 = &ftm_alarm0;
 	};
 
@@ -862,20 +861,6 @@
 			dma-coherent;
 			voltage-ranges = <1800 1800 3300 3300>;
 			sdhci,auto-cmd12;
-			little-endian;
-			bus-width = <4>;
-			status = "disabled";
-		};
-
-		esdhc1: esdhc@2150000 {
-			compatible = "fsl,esdhc";
-			reg = <0x0 0x2150000 0x0 0x10000>;
-			interrupts = <0 63 0x4>; /* Level high type */
-			clocks = <&clockgen 4 1>;
-			dma-coherent;
-			voltage-ranges = <1800 1800 3300 3300>;
-			sdhci,auto-cmd12;
-			broken-cd;
 			little-endian;
 			bus-width = <4>;
 			status = "disabled";

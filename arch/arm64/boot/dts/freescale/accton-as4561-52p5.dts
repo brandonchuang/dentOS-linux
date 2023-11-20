@@ -66,13 +66,9 @@
 	status = "disabled";
 };
 
-&esdhc1 {
-	status = "disabled";
-};
-
 &fspi {
 	status = "okay";
-	
+
 	w25q512nwein0: flash@0 {
                 #address-cells = <1>;
                 #size-cells = <1>;
@@ -163,7 +159,7 @@
 
 &pcs_mdio7 {
         status = "okay";
-	
+
 };
 
 &pcs7 {
