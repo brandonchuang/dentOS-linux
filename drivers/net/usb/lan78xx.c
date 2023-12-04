@@ -28,6 +28,7 @@
 #include <linux/phy_fixed.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
+#include <linux/delay.h>
 #include "lan78xx.h"
 
 #define DRIVER_AUTHOR	"WOOJUNG HUH <woojung.huh@microchip.com>"
@@ -4127,6 +4128,7 @@ static int lan78xx_probe(struct usb_interface *intf,
 	  */
 	pm_runtime_set_autosuspend_delay(&udev->dev,
 					 DEFAULT_AUTOSUSPEND_DELAY);
+	msleep(10000);
 
 	return 0;
 
