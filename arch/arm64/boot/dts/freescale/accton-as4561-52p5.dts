@@ -106,11 +106,6 @@
 &i2c2 {
 	status = "okay";
 	clock-frequency = <370000>;
-	eeprom@50 {
-                compatible = "atmel,24c32";
-                reg = <0x50>;
-        };
-
 };
 
 &i2c3 {
