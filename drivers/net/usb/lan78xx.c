@@ -4128,10 +4128,6 @@ static int lan78xx_probe(struct usb_interface *intf,
 	  */
 	pm_runtime_set_autosuspend_delay(&udev->dev,
 					 DEFAULT_AUTOSUSPEND_DELAY);
-	printk(KERN_INFO "================== LAN78xx sleep START ======================-\r\n");
-	msleep(10000);
-	printk(KERN_INFO "================== LAN78xx sleep END ======================-\r\n");
-
 
 	return 0;
 
