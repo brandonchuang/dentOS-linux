@@ -98,11 +98,6 @@
 	clock-frequency = <370000>;
 };
 
-&i2c1 {
-	status = "okay";
-	clock-frequency = <370000>;
-};
-
 &i2c2 {
 	status = "okay";
 	clock-frequency = <370000>;
