@@ -2,7 +2,7 @@
 //
 // Device Tree Include file for Layerscape-LX2160A family SoC.
 //
-// Copyright 2018-2021 NXP
+// Copyright 2018-2020 NXP
 
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
@@ -43,7 +43,7 @@
 			#cooling-cells = <2>;
 		};
 
-		/*cpu1: cpu@1 {
+		cpu1: cpu@1 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a72";
 			enable-method = "psci";
@@ -58,7 +58,7 @@
 			next-level-cache = <&cluster0_l2>;
 			cpu-idle-states = <&cpu_pw15>;
 			#cooling-cells = <2>;
-		};*/
+		};
 
 		cpu100: cpu@100 {
 			device_type = "cpu";
@@ -77,7 +77,7 @@
 			#cooling-cells = <2>;
 		};
 
-		/*cpu101: cpu@101 {
+		cpu101: cpu@101 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a72";
 			enable-method = "psci";
@@ -92,7 +92,7 @@
 			next-level-cache = <&cluster1_l2>;
 			cpu-idle-states = <&cpu_pw15>;
 			#cooling-cells = <2>;
-		};*/
+		};
 
 		cpu200: cpu@200 {
 			device_type = "cpu";
@@ -111,7 +111,7 @@
 			#cooling-cells = <2>;
 		};
 
-		/*cpu201: cpu@201 {
+		cpu201: cpu@201 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a72";
 			enable-method = "psci";
@@ -126,7 +126,7 @@
 			next-level-cache = <&cluster2_l2>;
 			cpu-idle-states = <&cpu_pw15>;
 			#cooling-cells = <2>;
-		};*/
+		};
 
 		cpu300: cpu@300 {
 			device_type = "cpu";
@@ -145,7 +145,7 @@
 			#cooling-cells = <2>;
 		};
 
-		/*cpu301: cpu@301 {
+		cpu301: cpu@301 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a72";
 			enable-method = "psci";
@@ -160,7 +160,7 @@
 			next-level-cache = <&cluster3_l2>;
 			cpu-idle-states = <&cpu_pw15>;
 			#cooling-cells = <2>;
-		};*/
+		};
 
 		cpu400: cpu@400 {
 			device_type = "cpu";
@@ -179,7 +179,7 @@
 			#cooling-cells = <2>;
 		};
 
-		/*cpu401: cpu@401 {
+		cpu401: cpu@401 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a72";
 			enable-method = "psci";
@@ -194,7 +194,7 @@
 			next-level-cache = <&cluster4_l2>;
 			cpu-idle-states = <&cpu_pw15>;
 			#cooling-cells = <2>;
-		};*/
+		};
 
 		cpu500: cpu@500 {
 			device_type = "cpu";
@@ -213,7 +213,7 @@
 			#cooling-cells = <2>;
 		};
 
-		/*cpu501: cpu@501 {
+		cpu501: cpu@501 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a72";
 			enable-method = "psci";
@@ -228,7 +228,7 @@
 			next-level-cache = <&cluster5_l2>;
 			cpu-idle-states = <&cpu_pw15>;
 			#cooling-cells = <2>;
-		};*/
+		};
 
 		cpu600: cpu@600 {
 			device_type = "cpu";
@@ -247,7 +247,7 @@
 			#cooling-cells = <2>;
 		};
 
-		/*cpu601: cpu@601 {
+		cpu601: cpu@601 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a72";
 			enable-method = "psci";
@@ -262,7 +262,7 @@
 			next-level-cache = <&cluster6_l2>;
 			cpu-idle-states = <&cpu_pw15>;
 			#cooling-cells = <2>;
-		};*/
+		};
 
 		cpu700: cpu@700 {
 			device_type = "cpu";
@@ -281,7 +281,7 @@
 			#cooling-cells = <2>;
 		};
 
-		/*cpu701: cpu@701 {
+		cpu701: cpu@701 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a72";
 			enable-method = "psci";
@@ -296,7 +296,7 @@
 			next-level-cache = <&cluster7_l2>;
 			cpu-idle-states = <&cpu_pw15>;
 			#cooling-cells = <2>;
-		};*/
+		};
 
 		cluster0_l2: l2-cache0 {
 			compatible = "cache";
@@ -415,8 +415,7 @@
 	memory@80000000 {
 		// DRAM space - 1, size : 2 GB DRAM
 		device_type = "memory";
-		reg = <0x00000000 0x80000000 0 0x80000000>,
-		      <0x00000008 0x80000000 0x07 0x80000000>;
+		reg = <0x00000000 0x80000000 0 0x80000000>;
 	};
 
 	ddr1: memory-controller@1080000 {
@@ -466,21 +465,21 @@
 					trip = <&cluster6_7_alert>;
 					cooling-device =
 						<&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-						//<&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						/*<&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,*/
 						<&cpu100 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-						//<&cpu101 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						/*<&cpu101 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,*/
 						<&cpu200 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-						//<&cpu201 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						/*<&cpu201 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,*/
 						<&cpu300 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-						//<&cpu301 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						/*<&cpu301 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,*/
 						<&cpu400 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-						//<&cpu401 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						/*<&cpu401 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,*/
 						<&cpu500 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-						//<&cpu501 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+						/*<&cpu501 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,*/
 						<&cpu600 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-						//<&cpu601 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
-						<&cpu700 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
-						//<&cpu701 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+						/*<&cpu601 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,*/
+						<&cpu700 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;/*,*/
+						/*<&cpu701 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;*/
 				};
 			};
 		};
@@ -1393,6 +1392,7 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			little-endian;
+			status = "disabled";
 		};
 
 		emdio2: mdio@8b97000 {
@@ -1402,13 +1402,7 @@
 			little-endian;
 			#address-cells = <1>;
 			#size-cells = <0>;
-		};
-
-		serdes1: serdes@1ea0000 {
-				compatible = "fsl,serdes-28g";
-				reg = <0x0 0x1ea0000 0 0x00002000>;
-				fsl,lane-reg = <0xF00 0xE00 0xD00 0xC00 0xB00 0xA00 0x900 0x800>; /* lanes H, G, F, E, D, C, B, A */
-				little-endian;
+			status = "disabled";
 		};
 
 		pcs_mdio1: mdio@8c07000 {

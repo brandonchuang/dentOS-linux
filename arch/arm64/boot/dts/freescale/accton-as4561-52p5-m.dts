@@ -32,90 +32,239 @@
 };
 
 &can0 {
-	status = "disabled";
+	status = "okay";
+
+	can-transceiver {
+		max-bitrate = <5000000>;
+	};
 };
 
 &can1 {
-	status = "disabled";
+	status = "okay";
+
+	can-transceiver {
+		max-bitrate = <5000000>;
+	};
 };
 
 &crypto {
 	status = "okay";
 };
 
+&dpmac7 {
+    status = "okay";
+	/*phy-handle = <&aquantia_phy1>;*/
+    fixed-link = <10 1 10000 0 0>;
+	phy-connection-type = "usxgmii";
+	/*managed = "in-band-status";*/
+};
+&dpmac8 {
+    status = "okay";
+	/*phy-handle = <&aquantia_phy2>;*/
+    fixed-link = <11 1 10000 0 0>;
+	phy-connection-type = "usxgmii";
+	/*managed = "in-band-status";*/
+};
+&dpmac9 {
+    status = "okay";
+	/*phy-handle = <&aquantia_phy1>;*/
+    fixed-link = <12 1 10000 0 0>;
+	phy-connection-type = "usxgmii";
+	/*managed = "in-band-status";*/
+};
+&dpmac10 {
+    status = "okay";
+	/*phy-handle = <&aquantia_phy2>;*/
+    fixed-link = <13 1 10000 0 0>;
+	phy-connection-type = "usxgmii";
+	/*managed = "in-band-status";*/
+};
 &dpmac17 {
-	status = "okay";
+    status = "okay";
 	phy-handle = <&rgmii_phy1>;
 	phy-connection-type = "rgmii-id";
 };
-
+/*
+&dpmac18 {
+	phy-handle = <&rgmii_phy2>;
+	phy-connection-type = "rgmii-id";
+};
+*/
 
 &emdio1 {
 	status = "okay";
+
+	rgmii_phy1: ethernet-phy@1 {
+		/* AR8035 PHY */
+		/*compatible = "ethernet-phy-id004d.d072";*/
+        compatible = "ethernet-phy-id0141.0dd1";
+		reg = <0x1>;
+		eee-broken-1000t;
+	};
+/*
+	rgmii_phy2: ethernet-phy@2 {
+		# AR8035 PHY 
+		compatible = "ethernet-phy-id004d.d072";
+		reg = <0x2>;
+		eee-broken-1000t;
+	};
+
+	aquantia_phy1: ethernet-phy@4 {
+		# AQR107 PHY 
+		compatible = "ethernet-phy-ieee802.3-c45";
+		interrupts = <GIC_SPI 2 IRQ_TYPE_LEVEL_HIGH>;
+		reg = <0x4>;
+	};
+
+	aquantia_phy2: ethernet-phy@5 {
+		# AQR107 PHY 
+		compatible = "ethernet-phy-ieee802.3-c45";
+		interrupts = <GIC_SPI 3 IRQ_TYPE_LEVEL_HIGH>;
+		reg = <0x5>;
+	};
+*/
 };
 
 &emdio2 {
 	status = "okay";
-	rgmii_phy1: ethernet-phy@1 {
-                //compatible = "ethernet-phy-id004d.d072";
-                compatible = "ethernet-phy-id001c.c916";
-                reg = <0x1>;
-        };
 };
 
+/*
 &esdhc0 {
-	status = "disabled";
+	sd-uhs-sdr104;
+	sd-uhs-sdr50;
+	sd-uhs-sdr25;
+	sd-uhs-sdr12;
+	status = "okay";
+};
+*/
+&esdhc0 {
+	status = "okay";
 };
 
 &fspi {
 	status = "okay";
 
-	w25q512nwein0: flash@0 {
-                #address-cells = <1>;
-                #size-cells = <1>;
-                compatible = "winbond,w25q512wn", "jedec,spi-nor";
-                m25p,fast-read;
-                spi-max-frequency = <50000000>;
-                reg = <0>;
-                spi-rx-bus-width = <8>;
-                spi-tx-bus-width = <1>;
-        };
+    flash@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <50000000>;
+		#spi-rx-bus-width = <4>;
+                partition@0 {
+                        reg = <0x0 0x1000000>;
+                        label = "uboot";
+                };
 
+                partition@1 {
+                        reg = <0x1000000 0x100000>;
+                        label = "uboot-env";
+                        env_size = <0x0004000>;
+                };
+
+                partition@2 {
+                        reg = <0x1100000 0x2800000>;
+                        label = "onie";
+                };
+    };
 };
 
-&dspi2 {
-        status = "okay";
-
-        tpm@0 {
-                compatible = "infineon,slb9670", "tcg,tpm_tis-spi";
-                reg = <0>;
-                spi-max-frequency = <10000000>;
-        };
-
+&dspi1 {
+    status = "okay";
+    spi-tpm@0 {
+        compatible = "infineon,slb9670";
+        /*mode 0*/
+        reg = <0>;
+        /*spi-max-frequency = <38000000>;*/
+        spi-max-frequency = <4000000>;
+    };
+	dflash1: flash@1 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "jedec,spi-nor";
+		reg = <1>;
+		spi-max-frequency = <1000000>;
+	};
 };
 
 &i2c0 {
 	status = "okay";
-};
+    /*
+	i2c-mux@77 {
+		compatible = "nxp,pca9547";
+		reg = <0x77>;
+		#address-cells = <1>;
+		#size-cells = <0>;
 
+		i2c@2 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0x2>;
+
+			power-monitor@40 {
+				compatible = "ti,ina220";
+				reg = <0x40>;
+				shunt-resistor = <500>;
+			};
+		};
+
+		i2c@3 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg = <0x3>;
+
+			temperature-sensor@4c {
+				compatible = "nxp,sa56004";
+				reg = <0x4c>;
+				vcc-supply = <&sb_3v3>;
+			};
+
+			temperature-sensor@4d {
+				compatible = "nxp,sa56004";
+				reg = <0x4d>;
+				vcc-supply = <&sb_3v3>;
+			};
+		};
+	};
+    */
+};
+&i2c1 {
+	status = "okay";
+};
 &i2c2 {
 	status = "okay";
 };
-
 &i2c3 {
-        status = "okay";
+	status = "okay";
 };
-
+&i2c4 {
+	status = "okay";
+    /*
+	rtc@51 {
+		compatible = "nxp,pcf2129";
+		reg = <0x51>;
+		# IRQ_RTC_B -> IRQ08, active low 
+		interrupts-extended = <&extirq 8 IRQ_TYPE_LEVEL_LOW>;
+	};
+    */
+};
 &i2c5 {
-        status = "okay";
+	status = "okay";
 };
-
 &i2c6 {
-        status = "okay";
+	status = "okay";
+};
+&i2c7 {
+	status = "okay";
 };
 
-&i2c7 {
-        status = "okay";
+&pcs_mdio3 {
+	status = "okay";
+};
+
+&pcs_mdio4 {
+	status = "okay";
 };
 
 &sata0 {
@@ -123,6 +272,14 @@
 };
 
 &sata1 {
+	status = "okay";
+};
+
+&sata2 {
+	status = "okay";
+};
+
+&sata3 {
 	status = "okay";
 };
 
@@ -142,71 +299,17 @@
 	status = "okay";
 };
 
-&pcs_mdio7 {
-        status = "okay";
-
+&emdio2 {
+	inphi_phy: ethernet-phy@0 {
+		compatible = "ethernet-phy-id0210.7440";
+		reg = <0x0>;
+	};
 };
 
-&pcs7 {
-        compatible = "ethernet-phy-ieee802.3-c45";
-        backplane-mode = "10gbase-kr";
-        reg = <0x0>;
-        fsl,lane-handle = <&serdes1>;
-        fsl,lane-reg = <0xB00 0x100>; /* lane D */
+&dpmac5 {
+	phy-handle = <&inphi_phy>;
 };
 
-&pcs_mdio8 {
-        status = "okay";
-};
-
-&pcs8 {
-        compatible = "ethernet-phy-ieee802.3-c45";
-        backplane-mode = "10gbase-kr";
-        reg = <0x0>;
-        fsl,lane-handle = <&serdes1>;
-        fsl,lane-reg = <0xA00 0x100>; /* lane C */
-};
-
-&pcs_mdio9 {
-        status = "okay";
-};
-
-&pcs9 {
-        compatible = "ethernet-phy-ieee802.3-c45";
-        backplane-mode = "10gbase-kr";
-        reg = <0x0>;
-        fsl,lane-handle = <&serdes1>;
-        fsl,lane-reg = <0x900 0x100>; /* lane B */
-};
-
-&pcs_mdio10 {
-        status = "okay";
-};
-
-&pcs10 {
-        compatible = "ethernet-phy-ieee802.3-c45";
-        backplane-mode = "10gbase-kr";
-        reg = <0x0>;
-        fsl,lane-handle = <&serdes1>;
-        fsl,lane-reg = <0x800 0x100>; /* lane A */
-};
-
-&dpmac7 {
-	phy-handle = <&pcs7>;
-        phy-connection-type = "10gbase-kr";
-};
-
-&dpmac8 {
-	phy-handle = <&pcs8>;
-        phy-connection-type = "10gbase-kr";
-};
-
-&dpmac9 {
-	phy-handle = <&pcs9>;
-        phy-connection-type = "10gbase-kr";
-};
-
-&dpmac10 {
-        phy-handle = <&pcs10>;
-        phy-connection-type = "10gbase-kr";
+&dpmac6 {
+	phy-handle = <&inphi_phy>;
 };
