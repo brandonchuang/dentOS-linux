@@ -1,0 +1,212 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+//
+// Device Tree file for LX2160ARDB
+//
+// Copyright 2018-2020 NXP
+
+/dts-v1/;
+
+#include "accton-as4561-52p5-m.dtsi"
+
+/ {
+	model = "NXP Layerscape LX2160ARDB";
+	compatible = "fsl,lx2160a-rdb", "fsl,lx2160a";
+
+	aliases {
+		crypto = &crypto;
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	sb_3v3: regulator-sb3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "MC34717-3.3VSB";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+};
+
+&can0 {
+	status = "disabled";
+};
+
+&can1 {
+	status = "disabled";
+};
+
+&crypto {
+	status = "okay";
+};
+
+&dpmac17 {
+	status = "okay";
+	phy-handle = <&rgmii_phy1>;
+	phy-connection-type = "rgmii-id";
+};
+
+
+&emdio1 {
+	status = "okay";
+};
+
+&emdio2 {
+	status = "okay";
+	rgmii_phy1: ethernet-phy@1 {
+                //compatible = "ethernet-phy-id004d.d072";
+                compatible = "ethernet-phy-id001c.c916";
+                reg = <0x1>;
+        };
+};
+
+&esdhc0 {
+	status = "disabled";
+};
+
+&fspi {
+	status = "okay";
+
+	w25q512nwein0: flash@0 {
+                #address-cells = <1>;
+                #size-cells = <1>;
+                compatible = "winbond,w25q512wn", "jedec,spi-nor";
+                m25p,fast-read;
+                spi-max-frequency = <50000000>;
+                reg = <0>;
+                spi-rx-bus-width = <8>;
+                spi-tx-bus-width = <1>;
+        };
+
+};
+
+&dspi2 {
+        status = "okay";
+
+        tpm@0 {
+                compatible = "infineon,slb9670", "tcg,tpm_tis-spi";
+                reg = <0>;
+                spi-max-frequency = <10000000>;
+        };
+
+};
+
+&i2c0 {
+	status = "okay";
+};
+
+&i2c2 {
+	status = "okay";
+};
+
+&i2c3 {
+        status = "okay";
+};
+
+&i2c5 {
+        status = "okay";
+};
+
+&i2c6 {
+        status = "okay";
+};
+
+&i2c7 {
+        status = "okay";
+};
+
+&sata0 {
+	status = "okay";
+};
+
+&sata1 {
+	status = "okay";
+};
+
+&uart0 {
+	status = "okay";
+};
+
+&uart1 {
+	status = "okay";
+};
+
+&usb0 {
+	status = "okay";
+};
+
+&usb1 {
+	status = "okay";
+};
+
+&pcs_mdio7 {
+        status = "okay";
+
+};
+
+&pcs7 {
+        compatible = "ethernet-phy-ieee802.3-c45";
+        backplane-mode = "10gbase-kr";
+        reg = <0x0>;
+        fsl,lane-handle = <&serdes1>;
+        fsl,lane-reg = <0xB00 0x100>; /* lane D */
+};
+
+&pcs_mdio8 {
+        status = "okay";
+};
+
+&pcs8 {
+        compatible = "ethernet-phy-ieee802.3-c45";
+        backplane-mode = "10gbase-kr";
+        reg = <0x0>;
+        fsl,lane-handle = <&serdes1>;
+        fsl,lane-reg = <0xA00 0x100>; /* lane C */
+};
+
+&pcs_mdio9 {
+        status = "okay";
+};
+
+&pcs9 {
+        compatible = "ethernet-phy-ieee802.3-c45";
+        backplane-mode = "10gbase-kr";
+        reg = <0x0>;
+        fsl,lane-handle = <&serdes1>;
+        fsl,lane-reg = <0x900 0x100>; /* lane B */
+};
+
+&pcs_mdio10 {
+        status = "okay";
+};
+
+&pcs10 {
+        compatible = "ethernet-phy-ieee802.3-c45";
+        backplane-mode = "10gbase-kr";
+        reg = <0x0>;
+        fsl,lane-handle = <&serdes1>;
+        fsl,lane-reg = <0x800 0x100>; /* lane A */
+};
+
+&dpmac7 {
+	phy-handle = <&pcs7>;
+        phy-connection-type = "10gbase-kr";
+};
+
+&dpmac8 {
+	phy-handle = <&pcs8>;
+        phy-connection-type = "10gbase-kr";
+};
+
+&dpmac9 {
+	phy-handle = <&pcs9>;
+        phy-connection-type = "10gbase-kr";
+};
+
+&dpmac10 {
+        phy-handle = <&pcs10>;
+        phy-connection-type = "10gbase-kr";
+};
