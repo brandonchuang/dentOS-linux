@@ -18,7 +18,6 @@
 
 	aliases {
 		mmc0 = &esdhc0;
-		mmc1 = &esdhc1;
 		rtc1 = &ftm_alarm0;
 	};
 
