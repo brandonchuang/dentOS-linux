@@ -454,7 +454,7 @@
 				};
 
 				cluster6_7_crit: cluster6-7-crit {
-					temperature = <95000>;
+					temperature = <105000>;
 					hysteresis = <2000>;
 					type = "critical";
 				};
@@ -497,7 +497,7 @@
 				};
 
 				ddr-cluster5-crit {
-					temperature = <95000>;
+					temperature = <105000>;
 					hysteresis = <2000>;
 					type = "critical";
 				};
@@ -517,7 +517,7 @@
 				};
 
 				wriop-crit {
-					temperature = <95000>;
+					temperature = <105000>;
 					hysteresis = <2000>;
 					type = "critical";
 				};
@@ -537,7 +537,7 @@
 				};
 
 				dce-qbman-crit {
-					temperature = <95000>;
+					temperature = <105000>;
 					hysteresis = <2000>;
 					type = "critical";
 				};
@@ -557,7 +557,7 @@
 				};
 
 				ccn-dpaa-crit {
-					temperature = <95000>;
+					temperature = <105000>;
 					hysteresis = <2000>;
 					type = "critical";
 				};
@@ -577,7 +577,7 @@
 				};
 
 				clust4-hsio3-crit {
-					temperature = <95000>;
+					temperature = <105000>;
 					hysteresis = <2000>;
 					type = "critical";
 				};
@@ -597,7 +597,7 @@
 				};
 
 				cluster2-3-crit {
-					temperature = <95000>;
+					temperature = <105000>;
 					hysteresis = <2000>;
 					type = "critical";
 				};
